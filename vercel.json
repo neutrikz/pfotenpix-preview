@@ -1,7 +1,6 @@
 {
+  "version": 2,
   "functions": {
-    "api/generate.js": {
-      "runtime": "edge"
-    }
+    "api/generate.js": { "runtime": "edge" }
   }
 }
