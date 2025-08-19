@@ -35,11 +35,11 @@ async function fetchArrayBuffer(url, timeoutMs = 20000) {
 function buildPrompt(style) {
   switch (style) {
     case "natürlich":
-      return "Erzeuge eine fotorealistische, natürliche Farbversion. Scharf, detailreich, ohne künstlerische Verfremdung.";
+      return "Erzeuge eine fotorealistische, natürliche Farbversion dieses Haustierfotos. Die Fellstruktur, Augen und Details sollen scharf und realitätsgetreu erscheinen. Keine künstlerische Verfremdung. Der Hintergrund kann weich gezeichnet sein, aber das Tier bleibt zentriert und unverändert.";
     case "schwarzweiß":
-      return "Erzeuge eine elegante, hochwertige Schwarz-Weiß-Version. Hoher Dynamikumfang, fein abgestufte Kontraste, edler Look.";
+      return "Erzeuge eine elegante Schwarz-Weiß-Version des Fotos. Erhalte alle Details des Tieres, mit hohem Dynamikumfang und fein abgestuften Grautönen. Keine künstlerischen Filter oder übertriebene Kontraste. Das Tier bleibt naturgetreu und klar erkennbar.";
     case "neon":
-      return "Erzeuge eine fotorealistische Version mit lebendiger Neon-Optik: leuchtende farbige Highlights, moderner Pop-Art Flair, aber Motiv bleibt klar erkennbar.";
+      return "Erzeuge eine stilisierte Version dieses Haustierfotos mit Neon-Optik im Pop-Art-Stil. Leuchtende, bunte Akzente umrahmen das Tier, ohne es zu verfälschen. Der Hintergrund darf modern und kontrastreich sein – z. B. Neonraster, Farbverlauf oder Lichtlinien – aber das Tier bleibt realistisch und im Zentrum des Bildes.";
     default:
       return "Erzeuge eine fotorealistische, klare Version.";
   }
