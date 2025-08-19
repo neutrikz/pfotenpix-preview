@@ -52,9 +52,9 @@ export default async function handler(req, res) {
 
   try {
     // 🔐 Sicherheitsprüfung (Secret vom WordPress-Server)
-    console.log("🔒 Eingehendes Secret:", secret);
-console.log("🔐 Vercel ENV Secret:", process.env.PFPX_SECRET);
     const secret = req.headers["x-pfpx-secret"];
+    console.log("🔒 Eingehendes Secret:", secret);
+    console.log("🔐 Vercel ENV Secret:", process.env.PFPX_SECRET);
     if (!secret || secret !== process.env.PFPX_SECRET) {
       return res.status(401).json({ error: "Unauthorized: Invalid Secret" });
     }
