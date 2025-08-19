@@ -32,17 +32,14 @@ async function fetchArrayBuffer(url, timeoutMs = 20000) {
 }
 
 // Prompt-Generator pro Stil
-function buildPrompt(style) {
-  switch (style) {
-    case "natürlich":
-      return "Erzeuge eine fotorealistische, natürliche Farbversion dieses Haustierfotos. Die Fellstruktur, Augen und Details sollen scharf und realitätsgetreu erscheinen. Keine künstlerische Verfremdung. Der Hintergrund kann weich gezeichnet sein, aber das Tier bleibt zentriert und unverändert.";
-    case "schwarzweiß":
-      return "Erzeuge eine elegante Schwarz-Weiß-Version des Fotos. Erhalte alle Details des Tieres, mit hohem Dynamikumfang und fein abgestuften Grautönen. Keine künstlerischen Filter oder übertriebene Kontraste. Das Tier bleibt naturgetreu und klar erkennbar.";
-    case "neon":
-      return "Erzeuge eine stilisierte Version dieses Haustierfotos mit Neon-Optik im Pop-Art-Stil. Leuchtende, bunte Akzente umrahmen das Tier, ohne es zu verfälschen. Der Hintergrund darf modern und kontrastreich sein – z. B. Neonraster, Farbverlauf oder Lichtlinien – aber das Tier bleibt realistisch und im Zentrum des Bildes.";
-    default:
-      return "Erzeuge eine fotorealistische, klare Version.";
-  }
+function buildPrompt(style, customText = "") {
+  const basePrompt = {
+    "natürlich": "Erzeuge eine fotorealistische, natürliche Farbversion dieses Haustierfotos. Die Fellstruktur, Augen und Details sollen scharf und realitätsgetreu erscheinen. Keine künstlerische Verfremdung. Der Hintergrund kann weich gezeichnet sein, aber das Tier bleibt zentriert und unverändert.",
+    "schwarzweiß": "Erzeuge eine elegante Schwarz-Weiß-Version des Fotos. Erhalte alle Details des Tieres, mit hohem Dynamikumfang und fein abgestuften Grautönen. Keine künstlerischen Filter oder übertriebene Kontraste. Das Tier bleibt naturgetreu und klar erkennbar.",
+    "neon": "Erzeuge eine stilisierte Version dieses Haustierfotos mit Neon-Optik im Pop-Art-Stil. Leuchtende, bunte Akzente umrahmen das Tier, ohne es zu verfälschen. Der Hintergrund darf modern und kontrastreich sein – z. B. Neonraster, Farbverlauf oder Lichtlinien – aber das Tier bleibt realistisch und im Zentrum des Bildes."
+  }[style] || "Erzeuge eine fotorealistische, klare Version.";
+
+  return customText ? `${basePrompt} Integriere folgenden Text ins Bild: \"${customText}\".` : basePrompt;
 }
 
 export default async function handler(req, res) {
@@ -69,6 +66,7 @@ export default async function handler(req, res) {
     const styles = Array.isArray(body.styles) && body.styles.length
       ? body.styles
       : ["natürlich", "schwarzweiß", "neon"];
+    const customText = typeof body.custom_text === "string" ? body.custom_text.trim() : "";
 
     if (!imageUrl) {
       return res.status(400).json({ error: "Missing image_url" });
@@ -80,13 +78,13 @@ export default async function handler(req, res) {
 
     // 🔁 Bearbeitung für jeden Stil
     async function makeEdit(style) {
-      const prompt = buildPrompt(style);
+      const prompt = buildPrompt(style, customText);
 
       const form = new FormData();
       form.append("model", "gpt-image-1");
       form.append("prompt", prompt);
       form.append("image", new Blob([imgBuf]), imgName);
-      form.append("size", "1024x1024"); // ✅ Gültige Größe
+      form.append("size", "1024x1024");
       form.append("n", "1");
 
       const response = await fetch("https://api.openai.com/v1/images/edits", {
