@@ -1,77 +1,111 @@
-// api/generate.js
-export const config = { runtime: "edge" };
-const REPLICATE_TOKEN = process.env.REPLICATE_API_TOKEN;
-const CALLBACK_SECRET = process.env.CALLBACK_SECRET || "";
+// /api/generate.js — Vercel Serverless Function (Node 18+)
 
-function promptsFor(style) {
-  const map = {
-    natural: "photo-realistic pet portrait, natural colors, subtle retouch, clean soft lighting, high detail",
-    bw: "photorealistic black and white pet portrait, soft contrast, fine details, film look",
-    neon: "photorealistic pet with vivid neon rim lights (magenta, cyan, orange), crisp details, glowing accents"
-  };
-  return map[style] || map.natural;
-}
+export const config = { api: { bodyParser: false } }; // nur für Next.js-ähnliche Umgebungen, stört sonst nicht
 
-async function replicateImg2Img(imageUrl, prompt) {
-  const modelVersion = "stability-ai/sdxl-img2img"; // replace with valid version slug
-  const create = await fetch("https://api.replicate.com/v1/predictions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Token ${REPLICATE_TOKEN}`
-    },
-    body: JSON.stringify({
-      version: modelVersion,
-      input: { image: imageUrl, prompt, strength: 0.4, guidance_scale: 7 }
-    })
+function readJson(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try { resolve(JSON.parse(body || "{}")); }
+      catch (e) { reject(e); }
+    });
+    req.on("error", reject);
   });
-  if (!create.ok) throw new Error("Replicate create failed: " + (await create.text()));
-  const job = await create.json();
-  let outUrl = null;
-  for (let i=0;i<60;i++) {
-    await new Promise(r=>setTimeout(r, 2500));
-    const s = await fetch(`https://api.replicate.com/v1/predictions/${job.id}`, {
-      headers: { "Authorization": `Token ${REPLICATE_TOKEN}` }
-    });
-    if (!s.ok) throw new Error("Replicate poll failed: " + (await s.text()));
-    const data = await s.json();
-    if (data.status === "succeeded") {
-      outUrl = Array.isArray(data.output) ? data.output[0] : data.output;
-      break;
-    }
-    if (data.status === "failed" || data.status === "canceled") throw new Error("Generation failed");
-  }
-  if (!outUrl) throw new Error("Timeout waiting for Replicate");
-  return outUrl;
 }
 
-export default async function handler(req) {
+async function fetchArrayBuffer(url, timeoutMs = 20000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    if (req.method !== "POST") return new Response(JSON.stringify({ ok:false, error:"POST only" }), { status: 405 });
-    const body = await req.json();
-    const { order_id, item_id, image_url, styles = ["natural","bw","neon"], callback, secret } = body || {};
-    if (!order_id || !item_id || !image_url || !callback) return new Response(JSON.stringify({ ok:false, error:"Missing fields" }), { status: 400 });
-    if (CALLBACK_SECRET && secret !== CALLBACK_SECRET) return new Response(JSON.stringify({ ok:false, error:"Bad secret" }), { status: 403 });
+    const r = await fetch(url, { signal: ctrl.signal });
+    if (!r.ok) throw new Error(`fetch ${r.status}`);
+    return await r.arrayBuffer();
+  } finally {
+    clearTimeout(t);
+  }
+}
 
-    let previews = [];
-    if (!REPLICATE_TOKEN) {
-      previews = styles.map(() => image_url); // MOCK mode
-    } else {
-      for (const s of styles) {
-        const url = await replicateImg2Img(image_url, promptsFor(s));
-        previews.push(url);
-      }
+function buildPrompt(style) {
+  switch (style) {
+    case "natürlich":
+      return "Erzeuge eine fotorealistische, natürliche Farbversion. Scharf, detailreich, ohne künstlerische Verfremdung.";
+    case "schwarzweiß":
+      return "Erzeuge eine elegante, hochwertige Schwarz-Weiß-Version. Hoher Dynamikumfang, fein abgestufte Kontraste, edler Look.";
+    case "neon":
+      return "Erzeuge eine fotorealistische Version mit lebendiger Neon-Optik: leuchtende farbige Highlights, moderner Pop-Art Flair, aber Motiv bleibt klar erkennbar.";
+    default:
+      return "Erzeuge eine fotorealistische, klare Version.";
+  }
+}
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Only POST allowed" });
+  }
+
+  try {
+    // Auth vom WordPress-Server
+    const secret = req.headers["x-pfpx-secret"];
+    if (!secret || secret !== process.env.PFPX_SECRET) {
+      return res.status(401).json({ error: "Bad secret" });
     }
 
-    const cb = await fetch(callback, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ order_id, item_id, previews, secret })
-    });
-    if (!cb.ok) return new Response(JSON.stringify({ ok:false, error:"Callback failed: " + (await cb.text()) }), { status: 502 });
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+    }
 
-    return new Response(JSON.stringify({ ok:true, previews }), { status: 200 });
-  } catch (e) {
-    return new Response(JSON.stringify({ ok:false, error: String(e) }), { status: 500 });
+    // Body lesen
+    const body = await readJson(req);
+    const imageUrl = body.image_url;
+    const styles = Array.isArray(body.styles) && body.styles.length
+      ? body.styles
+      : ["natürlich", "schwarzweiß", "neon"];
+
+    if (!imageUrl) {
+      return res.status(400).json({ error: "image_url missing" });
+    }
+
+    // Kundenbild vom WP-Upload holen
+    const imgBuf = Buffer.from(await fetchArrayBuffer(imageUrl));
+    const imgName = imageUrl.split("/").pop()?.split("?")[0] || "upload.png";
+
+    // Ein Edit pro Stil erstellen (seriell = zuverlässiger bzgl. Limits)
+    async function makeEdit(style) {
+      const prompt = buildPrompt(style);
+
+      const form = new FormData();
+      form.append("model", "gpt-image-1");
+      form.append("prompt", prompt);
+      form.append("image", new Blob([imgBuf]), imgName); // image-to-image
+      form.append("size", "512x512");
+      form.append("n", "1");
+      form.append("response_format", "url");
+
+      const resp = await fetch("https://api.openai.com/v1/images/edits", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        body: form,
+      });
+
+      if (!resp.ok) {
+        const txt = await resp.text();
+        throw new Error(`OpenAI error ${resp.status}: ${txt}`);
+      }
+      const json = await resp.json();
+      const url = json?.data?.[0]?.url;
+      if (!url) throw new Error("No URL returned from OpenAI");
+      return url;
+    }
+
+    const previews = {};
+    for (const style of styles) {
+      previews[style] = await makeEdit(style);
+    }
+
+    return res.status(200).json({ previews });
+  } catch (err) {
+    console.error("generate error:", err);
+    return res.status(500).json({ error: "Generation failed" });
   }
 }
