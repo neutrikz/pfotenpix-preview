@@ -1,8 +1,10 @@
-// /api/generate.js – Vercel Serverless Function für PfotenPix
+// /api/generate.js – Vercel Serverless Function für PfotenPix mit automatischer Maskenerstellung
 
-export const config = { api: { bodyParser: false } }; // Vercel-kompatibel
+export const config = { api: { bodyParser: false } };
 
-// Body als JSON lesen (für Raw POST)
+import fetch from 'node-fetch';
+import FormData from 'form-data';
+
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -18,7 +20,6 @@ function readJson(req) {
   });
 }
 
-// Bild von URL laden
 async function fetchArrayBuffer(url, timeoutMs = 20000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -31,59 +32,68 @@ async function fetchArrayBuffer(url, timeoutMs = 20000) {
   }
 }
 
-// Prompt-Generator pro Stil
-function buildPrompt(style, customText = "") {
-  const basePrompt = {
-    "natürlich": "Erzeuge eine fotorealistische, natürliche Farbversion dieses Haustierfotos. Die Fellstruktur, Augen und Details sollen scharf und realitätsgetreu erscheinen. Keine künstlerische Verfremdung. Der Hintergrund kann weich gezeichnet sein, aber das Tier bleibt zentriert und unverändert.",
-    "schwarzweiß": "Erzeuge eine elegante Schwarz-Weiß-Version des Fotos. Erhalte alle Details des Tieres, mit hohem Dynamikumfang und fein abgestuften Grautönen. Keine künstlerischen Filter oder übertriebene Kontraste. Das Tier bleibt naturgetreu und klar erkennbar.",
-    "neon": "Erzeuge eine stilisierte Version dieses Haustierfotos mit Neon-Optik im Pop-Art-Stil. Leuchtende, bunte Akzente umrahmen das Tier, ohne es zu verfälschen. Der Hintergrund darf modern und kontrastreich sein – z. B. Neonraster, Farbverlauf oder Lichtlinien – aber das Tier bleibt realistisch und im Zentrum des Bildes."
-  }[style] || "Erzeuge eine fotorealistische, klare Version.";
+function buildPrompt(style) {
+  return {
+    "natürlich": "Fotorealistische, natürliche Farbversion dieses Haustierfotos. Keine künstlerische Verfremdung.",
+    "schwarzweiß": "Elegante Schwarz-Weiß-Version des Haustierfotos. Fein abgestufte Grautöne.",
+    "neon": "Stilisierte Neon-Version im Pop-Art-Stil mit leuchtenden Akzenten und modernem Hintergrund."
+  }[style] || "Fotorealistische Version des Bildes.";
+}
 
-  return customText ? `${basePrompt} Integriere folgenden Text ins Bild: \"${customText}\".` : basePrompt;
+async function generateMask(imageUrl) {
+  const res = await fetch("https://replicate.com/api/models/yshrsmz/ISNet-anime-seg/predictions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Token ${process.env.REPLICATE_API_TOKEN}`
+    },
+    body: JSON.stringify({
+      version: "latest",
+      input: { image: imageUrl }
+    })
+  });
+  const data = await res.json();
+  const maskUrl = data?.prediction?.output;
+  if (!maskUrl) throw new Error("Maskenerstellung fehlgeschlagen.");
+  return maskUrl;
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Only POST allowed" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "Only POST allowed" });
 
   try {
     const secret = req.headers["x-pfpx-secret"];
-    console.log("🔒 Eingehendes Secret:", secret);
-    console.log("🔐 Vercel ENV Secret:", process.env.PFPX_SECRET);
-
     if (!secret || secret !== process.env.PFPX_SECRET) {
-      return res.status(401).json({ error: "Unauthorized: Invalid Secret" });
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+    if (!process.env.OPENAI_API_KEY || !process.env.REPLICATE_API_TOKEN) {
+      return res.status(500).json({ error: "Missing API keys" });
     }
 
-    // 📥 JSON-Body lesen
     const body = await readJson(req);
     const imageUrl = body.image_url;
     const styles = Array.isArray(body.styles) && body.styles.length
-      ? body.styles
-      : ["natürlich", "schwarzweiß", "neon"];
-    const customText = typeof body.custom_text === "string" ? body.custom_text.trim() : "";
+      ? body.styles : ["natürlich", "schwarzweiß", "neon"];
 
-    if (!imageUrl) {
-      return res.status(400).json({ error: "Missing image_url" });
-    }
+    if (!imageUrl) return res.status(400).json({ error: "Missing image_url" });
 
-    // 📸 Bild abrufen & umwandeln
+    // Maske erzeugen
+    const maskUrl = await generateMask(imageUrl);
+
+    // Bild + Maske laden
     const imgBuf = Buffer.from(await fetchArrayBuffer(imageUrl));
-    const imgName = imageUrl.split("/").pop()?.split("?")[0] || "upload.png";
+    const maskBuf = Buffer.from(await fetchArrayBuffer(maskUrl));
+    const imgName = imageUrl.split("/").pop()?.split("?")[0] || "upload.jpg";
+    const maskName = "mask.png";
 
-    // 🔁 Bearbeitung für jeden Stil
     async function makeEdit(style) {
-      const prompt = buildPrompt(style, customText);
-
+      const prompt = buildPrompt(style);
       const form = new FormData();
       form.append("model", "gpt-image-1");
       form.append("prompt", prompt);
-      form.append("image", new Blob([imgBuf]), imgName);
+      form.append("image", imgBuf, imgName);
+      form.append("mask", maskBuf, maskName);
       form.append("size", "1024x1024");
       form.append("n", "1");
 
@@ -97,7 +107,6 @@ export default async function handler(req, res) {
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error("OpenAI Error Response:", errorText);
         throw new Error(`OpenAI API Error (${response.status}): ${errorText}`);
       }
 
@@ -107,7 +116,6 @@ export default async function handler(req, res) {
       return url;
     }
 
-    // 🔄 Alle Varianten generieren
     const previews = {};
     for (const style of styles) {
       previews[style] = await makeEdit(style);
