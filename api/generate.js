@@ -55,8 +55,19 @@ async function getMaskFromReplicate(imageUrl) {
     })
   });
 
+  if (!replicateRes.ok) {
+    const errText = await replicateRes.text();
+    console.error("❌ Replicate API Fehler:", errText);
+    throw new Error("Fehler bei der Anfrage an Replicate API");
+  }
+
   const replicateData = await replicateRes.json();
-  const statusUrl = replicateData.urls.get;
+  const statusUrl = replicateData?.urls?.get;
+
+  if (!statusUrl) {
+    console.error("❌ Fehler beim Abrufen der Status-URL von Replicate:", replicateData);
+    throw new Error("Fehler beim Abrufen der Status-URL von Replicate.");
+  }
 
   for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 2000));
@@ -70,6 +81,10 @@ async function getMaskFromReplicate(imageUrl) {
       throw new Error("Maskenerstellung via Replicate fehlgeschlagen.");
     }
   }
+
+  throw new Error("Maskenerstellung Timeout nach 60 Sekunden.");
+}
+
 
   throw new Error("Maskenerstellung Timeout nach 60 Sekunden.");
 }
