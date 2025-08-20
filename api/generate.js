@@ -50,7 +50,7 @@ async function getMaskFromReplicate(imageUrl) {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-     version: "6f8a54ae8a4f9c42c5798b26efb26c55c95c9e2c010f74b3279c25baf92d8930", // neue Version prüfen
+     version: "21c7e3062606458a15170cd3f6c6e4812c1ad17f98cdbf5e9c80ffb06b08f6a7", // neue Version prüfen
       input: { image: imageUrl }
     })
   });
