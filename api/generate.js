@@ -50,24 +50,19 @@ async function getMaskFromReplicate(imageUrl) {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      version: "c1c8198d76d372a9f64e0f1d5245fd8b5ed7e1eabf3170f42621ec45c3f18b96",
+      version: "c1c8198d76d372a9f64e0f1d5245fd8b5ed7e1eabf3170f42621ec45c3f18b96", // neue Version prüfen
       input: { image: imageUrl }
     })
   });
 
-  if (!replicateRes.ok) {
-    const errText = await replicateRes.text();
-    console.error("❌ Replicate API Fehler:", errText);
-    throw new Error("Fehler bei der Anfrage an Replicate API");
-  }
-
   const replicateData = await replicateRes.json();
-  const statusUrl = replicateData?.urls?.get;
 
-  if (!statusUrl) {
-    console.error("❌ Fehler beim Abrufen der Status-URL von Replicate:", replicateData);
-    throw new Error("Fehler beim Abrufen der Status-URL von Replicate.");
+  if (!replicateData || !replicateData.urls || !replicateData.urls.get) {
+    console.error("❌ Replicate API-Fehler: Antwort unvollständig:", replicateData);
+    throw new Error("Ungültige Antwort von Replicate API – keine Status-URL.");
   }
+
+  const statusUrl = replicateData.urls.get;
 
   for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 2000));
@@ -85,9 +80,6 @@ async function getMaskFromReplicate(imageUrl) {
   throw new Error("Maskenerstellung Timeout nach 60 Sekunden.");
 }
 
-
-  throw new Error("Maskenerstellung Timeout nach 60 Sekunden.");
-}
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
