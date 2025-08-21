@@ -1,8 +1,8 @@
-// /api/generate-fix.js
+// /api/generate-fix.js – finale Version mit formdata-node & createFile
 import sharp from 'sharp';
 import Jimp from 'jimp';
 import { FormData } from 'formdata-node';
-import { fileFromBuffer } from 'formdata-node/helpers/file-from-buffer';
+import { createFile } from 'formdata-node/file-from-path';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
@@ -34,15 +34,9 @@ export default async function handler(req, res) {
 
   try {
     console.log("📥 Bild empfangen, beginne Verarbeitung");
+    const buffer = Buffer.from(imageData.replace(/^data:image\/\w+;base64,/, ""), 'base64');
 
-    const originalBuffer = Buffer.from(imageData.replace(/^data:image\/\w+;base64,/, ""), 'base64');
-
-    // Resize auf 1024x1024 für OpenAI
-    const resizedBuffer = await sharp(originalBuffer)
-      .resize(1024, 1024, { fit: 'cover' })
-      .png()
-      .toBuffer();
-
+    // ➤ RemBG API aufrufen
     console.log("🎭 Rufe RemBG-API auf");
     const replicateRes = await fetch('https://api.replicate.com/v1/predictions', {
       method: 'POST',
@@ -53,7 +47,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         version: 'fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003',
         input: {
-          image: `data:image/png;base64,${resizedBuffer.toString('base64')}`,
+          image: `data:image/png;base64,${buffer.toString('base64')}`,
           alpha_matting: true,
         },
       }),
@@ -71,6 +65,7 @@ export default async function handler(req, res) {
 
     const rembgBuffer = await fetch(outputUrl).then(r => r.arrayBuffer());
 
+    // ➤ Maske bearbeiten mit Jimp
     console.log("🖼️ Maske verarbeiten mit Jimp");
     const image = await Jimp.read(Buffer.from(rembgBuffer));
     image.scan(0, 0, image.bitmap.width, image.bitmap.height, function (x, y, idx) {
@@ -80,8 +75,17 @@ export default async function handler(req, res) {
       this.bitmap.data[idx + 2] = alpha;
     });
     image.greyscale().contrast(1.0);
-    await image.resize(1024, 1024); // Resize Mask auf 1024x1024
-    const maskBuffer = await image.getBufferAsync(Jimp.MIME_PNG);
+
+    const resizedImage = image.clone().resize(1024, 1024);
+    await resizedImage.writeAsync('/tmp/mask.png');
+
+    const maskBuffer = await sharp('/tmp/mask.png')
+      .threshold(128)
+      .png()
+      .toBuffer();
+
+    const resizedOriginalBuffer = await sharp(buffer).resize(1024, 1024).png().toBuffer();
+    await sharp(resizedOriginalBuffer).toFile('/tmp/image.png');
 
     const styles = [
       { name: "natural", prompt: "enhance photo naturally, clean and realistic" },
@@ -95,8 +99,8 @@ export default async function handler(req, res) {
       console.log(`🎨 Sende an OpenAI (Stil: ${style.name})`);
 
       const form = new FormData();
-      form.set("image", await fileFromBuffer(resizedBuffer, "image.png"));
-      form.set("mask", await fileFromBuffer(maskBuffer, "mask.png"));
+      form.set("image", await createFile('/tmp/image.png'));
+      form.set("mask", await createFile('/tmp/mask.png'));
       form.set("prompt", `${style.prompt}${userText ? ` with text: "${userText}"` : ''}`);
       form.set("n", "1");
       form.set("size", "1024x1024");
@@ -106,8 +110,9 @@ export default async function handler(req, res) {
         method: "POST",
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
+          ...form.headers,
         },
-        body: form
+        body: form,
       });
 
       const openaiJson = await openaiRes.json();
