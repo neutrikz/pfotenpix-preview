@@ -1,11 +1,9 @@
-// /api/generate-fix.js – Stabil: multipart/form-data (WP) & JSON (Fallback)
+// /api/generate-fix.js – Stabil (ohne Maske/Replicate), verfeinerte Stil-Prompts
 
 import sharp from "sharp";
-import Jimp from "jimp";
 import { FormData, File } from "formdata-node"; // ⬅️ File nutzen für Upload-Parts
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
 const PFPX_SECRET = "pixpixpix";
 
 export const config = {
@@ -68,22 +66,9 @@ function parseMultipart(buffer, boundary) {
   return { fields, files };
 }
 
-// ---- Replicate Poll ----
-async function pollReplicateResult(id, attempts = 0) {
-  if (attempts > 20) throw new Error("Replicate timeout");
-  const r = await fetch(`https://api.replicate.com/v1/predictions/${id}`, {
-    headers: { Authorization: `Token ${REPLICATE_API_TOKEN}` },
-  });
-  const j = await r.json();
-  if (j.status === "succeeded") return j.output;
-  if (j.status === "failed") throw new Error("Replicate failed");
-  await new Promise((s) => setTimeout(s, 1500));
-  return pollReplicateResult(id, attempts + 1);
-}
-
 // ---- Handler ----
 export default async function handler(req, res) {
-  console.log("✅ generate-fix.js gestartet");
+  console.log("✅ generate-fix.js gestartet (ohne Maske)");
 
   if (req.method !== "POST") return res.status(405).end();
 
@@ -128,74 +113,58 @@ export default async function handler(req, res) {
       return res.status(415).json({ error: "Unsupported Content-Type" });
     }
 
-    // --- 1) RemBG (Replicate) ---
-    console.log("🎭 Rufe RemBG-API auf");
-    const repRes = await fetch("https://api.replicate.com/v1/predictions", {
-      method: "POST",
-      headers: {
-        Authorization: `Token ${REPLICATE_API_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        version: "fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003",
-        input: {
-          image: `data:image/png;base64,${sourceBuffer.toString("base64")}`,
-          alpha_matting: true,
-        },
-      }),
-    });
-    const repJson = await repRes.json();
-    if (!repJson.id) {
-      console.error("❌ RemBG-Rückgabe ungültig", repJson);
-      return res.status(500).json({ error: "Fehler bei RemBG (ID fehlt)" });
-    }
-
-    console.log("🕒 Warte auf RemBG-Output");
-    const maskUrl = await pollReplicateResult(repJson.id);
-    console.log("📤 Maske von RemBG erhalten:", maskUrl);
-
-    const rembgBuffer = Buffer.from(await (await fetch(maskUrl)).arrayBuffer());
-
-    // --- 2) Maske erzeugen & beide Bilder auf 1024x1024 PNG bringen ---
-    console.log("🖼️ Maske verarbeiten mit Jimp");
-    const jimg = await Jimp.read(rembgBuffer);
-    jimg.scan(0, 0, jimg.bitmap.width, jimg.bitmap.height, function (x, y, idx) {
-      const a = this.bitmap.data[idx + 3];
-      this.bitmap.data[idx + 0] = a;
-      this.bitmap.data[idx + 1] = a;
-      this.bitmap.data[idx + 2] = a;
-    });
-    jimg.greyscale().contrast(1.0);
-    await jimg.writeAsync("/tmp/mask.png");
-
-    const maskBuffer = await sharp("/tmp/mask.png")
-      .resize(1024, 1024, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
-      .threshold(128)
-      .png()
-      .toBuffer();
-
+    // --- 1) Eingabebild auf 1024x1024 PNG bringen (transparentes Padding statt Crop) ---
     const inputPng = await sharp(sourceBuffer)
       .resize(1024, 1024, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
       .png()
       .toBuffer();
 
-    // --- 3) OpenAI Images Edits ---
+    // --- 2) Stil-Prompts (Transformation des Tieres, Identität bewahren) ---
+    const baseGuardrails = [
+      "transform the entire animal subject (fur texture, lighting, color/grading), not only the background",
+      "preserve identity, anatomy, proportions, and pose; keep facial features and whiskers intact",
+      "keep eyes sharp with natural catchlights; no extra limbs, no distortions, no accessories unless present",
+      "clean, elegant background that complements the style (no busy scene replacement)",
+      "high-resolution detail; gallery-grade quality; avoid artifacts and posterization",
+    ].join(". ") + ".";
+
+    const promptNatural = [
+      "Create a premium studio portrait of the pet with a realistic, high-end look",
+      "soft diffused key light plus gentle rim light, refined micro-contrast on fur",
+      "subtle color grading, tasteful retouch, true-to-life colors, elegant neutral backdrop",
+      baseGuardrails,
+    ].join(". ") + (userText ? ` Include the following text subtly in the artwork: "${userText}".` : "");
+
+    const promptBW = [
+      "Convert into a fine-art black-and-white portrait (full grayscale)",
+      "deep rich blacks, bright yet controlled highlights, silver-gelatin print character",
+      "high local contrast with delicate detail in the fur, subtle film grain, dramatic directional lighting",
+      baseGuardrails,
+    ].join(". ") + (userText ? ` Include the following text subtly in the artwork: "${userText}".` : "");
+
+    const promptNeon = [
+      "Transform the pet into a bold neon pop-art portrait",
+      "vibrant saturated hues, cyan/magenta rim lights, tasteful contour glow around edges",
+      "stylized fur strokes with smooth gradients and gentle halation; modern poster-worthy finish",
+      "keep the subject clearly recognizable with crisp facial features",
+      baseGuardrails,
+    ].join(". ") + (userText ? ` Integrate the following text in a matching neon typography style: "${userText}".` : "");
+
     const styles = [
-      { name: "natural",     prompt: "enhance photo naturally, clean and realistic" },
-      { name: "schwarzweiß", prompt: "convert to black and white stylish photo" },
-      { name: "neon",        prompt: "apply neon glow, futuristic style" },
+      { name: "natural",     prompt: promptNatural },
+      { name: "schwarzweiß", prompt: promptBW },
+      { name: "neon",        prompt: promptNeon },
     ];
 
+    // --- 3) OpenAI Images Edits (ohne Maske → gesamtes Bild wird stilisiert) ---
     const previews = {}; // { stilName: url }
 
     for (const style of styles) {
       console.log(`🎨 Sende an OpenAI (Stil: ${style.name})`);
 
-      // ⬇️ WICHTIG: Datei-Parts als File-Objekte übergeben (kein Readable/Buffer direkt)
       const form = new FormData();
       form.set("image", new File([inputPng], "image.png", { type: "image/png" }));
-      form.set("mask",  new File([maskBuffer], "mask.png",   { type: "image/png" }));
-      form.set("prompt", `${style.prompt}${userText ? ` with text: "${userText}"` : ""}`);
+      form.set("prompt", style.prompt);
       form.set("n", "1");
       form.set("size", "1024x1024");
       form.set("response_format", "url");
