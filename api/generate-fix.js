@@ -1,20 +1,18 @@
-// /api/generate-fix.js – ohne Maske, verfeinerte Prompts, Retries + CORS
+// /api/generate-fix.js – ohne Maske, Prompts, Retries + einfache CORS (kein Secret nötig)
 
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const PFPX_SECRET = "pixpixpix";
-
-// === CORS: passe die Domains an deine(n) Host(s) an ===
-const ALLOWED_ORIGINS = [
-  "https://pfotenpix.de",
-  "https://www.pfotenpix.de",
-  "https://pfotenpix-preview.vercel.app",
-  "http://localhost:3000",
-];
 
 export const config = { api: { bodyParser: false } };
+
+// --- CORS (temporär permissiv; später gern wieder einschränken) ---
+function applyCORS(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
 
 // ---- Utils ----
 async function readRawBody(req) { const chunks=[]; for await (const ch of req) chunks.push(ch); return Buffer.concat(chunks); }
@@ -68,32 +66,11 @@ async function fetchOpenAIWithRetry(form, styleName, {retries=3, baseDelayMs=900
   throw lastError||new Error("Unbekannter Fehler bei OpenAI-Request");
 }
 
-// ---- CORS helpers ----
-function applyCORS(req, res){
-  const origin = req.headers.origin || "";
-  const allow = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
-  res.setHeader("Access-Control-Allow-Origin", allow);
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-pfpx-secret");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-}
-
 // ---- Handler ----
 export default async function handler(req, res) {
-  // CORS preflight
   applyCORS(req, res);
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
-
-  console.log("✅ generate-fix.js gestartet (ohne Maske + Retries + CORS)");
-  if (req.method !== "POST") return res.status(405).end();
-
-  if (req.headers["x-pfpx-secret"] !== PFPX_SECRET) {
-    console.warn("❌ Sicherheits-Token falsch oder fehlt");
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "POST")  return res.status(405).end();
 
   try {
     const ctype=(req.headers["content-type"]||"").toLowerCase();
@@ -103,21 +80,17 @@ export default async function handler(req, res) {
     if (ctype.startsWith("multipart/form-data")){
       const m=/boundary=([^;]+)/i.exec(ctype);
       if (!m) return res.status(400).json({ error:"Bad multipart request (no boundary)"});
-      const boundary=m[1];
-      const raw=await readRawBody(req);
-      const { fields, files }=parseMultipart(raw,boundary);
-      const file=files["file"];
-      if (!file||!file.buffer){ console.warn("❌ multipart: Feld 'file' fehlt"); return res.status(400).json({ error:"No file uploaded" }); }
-      sourceBuffer=file.buffer;
+      const { fields, files }=parseMultipart(await readRawBody(req), m[1]);
+      const f=files["file"];
+      if (!f?.buffer) return res.status(400).json({ error:"No file uploaded" });
+      sourceBuffer=f.buffer;
       userText=(fields["custom_text"]||fields["text"]||"").toString();
       console.log("📥 Bild empfangen (multipart)");
     } else if (ctype.includes("application/json")){
-      const raw=await readRawBody(req);
-      let body={}; try{ body=JSON.parse(raw.toString("utf8")); }catch{}
+      const raw=await readRawBody(req); let body={}; try{ body=JSON.parse(raw.toString("utf8")); }catch{}
       const b64=(body.imageData||"").replace(/^data:image\/\w+;base64,/,"");
       if (!b64) return res.status(400).json({ error:"Kein Bild empfangen." });
-      sourceBuffer=Buffer.from(b64,"base64");
-      userText=body.userText||"";
+      sourceBuffer=Buffer.from(b64,"base64"); userText=body.userText||"";
       console.log("📥 Bild empfangen (JSON)");
     } else {
       return res.status(415).json({ error:"Unsupported Content-Type" });
@@ -161,10 +134,9 @@ export default async function handler(req, res) {
 
     const styles=[ {name:"natural", prompt:promptNatural}, {name:"schwarzweiß", prompt:promptBW}, {name:"neon", prompt:promptNeon} ];
 
-    // 3) OpenAI (mit Retries)
+    // 3) OpenAI mit Retries
     const previews={};
     for (const style of styles){
-      console.log(`🎨 Sende an OpenAI (Stil: ${style.name})`);
       const form=new FormData();
       form.set("image", new File([inputPng], "image.png", { type:"image/png" }));
       form.set("prompt", style.prompt);
@@ -173,8 +145,7 @@ export default async function handler(req, res) {
       form.set("response_format", "url");
 
       try{
-        const url = await fetchOpenAIWithRetry(form, style.name, { retries: 3, baseDelayMs: 900 });
-        previews[style.name]=url;
+        previews[style.name] = await fetchOpenAIWithRetry(form, style.name, { retries: 3, baseDelayMs: 900 });
         console.log(`✅ Stil '${style.name}' erfolgreich generiert`);
       }catch(err){
         console.error(`❌ OpenAI-Fehler bei Stil '${style.name}' nach Retries:`, String(err));
@@ -182,11 +153,10 @@ export default async function handler(req, res) {
       }
     }
 
-    console.log("✅ Alle Varianten generiert");
     return res.status(200).json({ success:true, previews });
 
   } catch (err) {
-    console.error("❌ Unerwarteter Fehler in generate-fix.js:", err);
+    console.error("❌ generate-fix.js Fehler:", err);
     return res.status(500).json({ error:"Interner Serverfehler" });
   }
 }
