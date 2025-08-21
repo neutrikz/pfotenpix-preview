@@ -1,9 +1,8 @@
-// /api/preview-proxy.js – Wasserzeichen-/B/W-Proxy für externe Bild-URLs
-// Sicherheit: verlangt x-pfpx-secret. Liefert CORS-Header für deinen Shop.
+// /api/preview-proxy.js – Wasserzeichen-Proxy (ohne Header-Auth), nur erlaubte Origins/Referrer
+// Abhängigkeit: sharp
 
 import sharp from "sharp";
 
-const PFPX_SECRET = "pixpixpix";
 const ALLOWED_ORIGINS = [
   "https://pfotenpix.de",
   "https://www.pfotenpix.de",
@@ -13,13 +12,25 @@ const ALLOWED_ORIGINS = [
 
 export const config = { api: { bodyParser: false } };
 
+function getOriginHost(req) {
+  const o = req.headers.origin || "";
+  try { return new URL(o).origin; } catch { return ""; }
+}
+function referrerAllowed(req) {
+  const ref = req.headers.referer || "";
+  if (!ref) return false;
+  try {
+    const r = new URL(ref);
+    return ALLOWED_ORIGINS.includes(`${r.protocol}//${r.host}`);
+  } catch { return false; }
+}
 function applyCORS(req, res) {
-  const origin = req.headers.origin || "";
-  const allow = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  const origin = getOriginHost(req);
+  const allow  = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
   res.setHeader("Access-Control-Allow-Origin", allow);
-  res.setHeader("Vary", "Origin");
+  res.setHeader("Vary", "Origin, Referer");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-pfpx-secret");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
@@ -28,8 +39,11 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).end();
 
-  if (req.headers["x-pfpx-secret"] !== PFPX_SECRET) {
-    return res.status(401).json({ error: "Unauthorized" });
+  // Erlaube nur Requests mit erlaubtem Origin ODER gültigem Referer
+  const originOK  = ALLOWED_ORIGINS.includes(getOriginHost(req));
+  const refererOK = referrerAllowed(req);
+  if (!originOK && !refererOK) {
+    return res.status(403).json({ error: "forbidden" });
   }
 
   try {
@@ -37,7 +51,6 @@ export default async function handler(req, res) {
     if (!u) return res.status(400).json({ error: "missing ?u=" });
 
     const width = Math.min(parseInt(req.query.w || "1200", 10) || 1200, 3000);
-    const bw    = req.query.bw === "1";
     const wmTxt = (req.query.wm || "PFOTENPIX • PREVIEW").toString();
 
     // 1) Upstream laden (OpenAI/CDN)
@@ -48,20 +61,19 @@ export default async function handler(req, res) {
     }
     const buf = Buffer.from(await upstream.arrayBuffer());
 
-    // 2) Bild verarbeiten
+    // 2) Resize
     let img = sharp(buf).resize({ width, fit: "inside", withoutEnlargement: true });
 
-    if (bw) img = img.toColourspace("b-w"); // garantiert monochrom
-
-    // 3) Wasserzeichen via SVG-Kachel
+    // 3) Wasserzeichen als SVG-Pattern (sichtbar positioniert)
     const svg = (w, h) => `
       <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
         <defs>
-          <pattern id="wm" width="260" height="220" patternUnits="userSpaceOnUse"
+          <pattern id="wm" width="280" height="230" patternUnits="userSpaceOnUse"
                    patternTransform="rotate(-30)">
-            <text x="0" y="0"
-                  fill="black" fill-opacity="0.16"
-                  font-family="system-ui, sans-serif" font-size="32" font-weight="700">
+            <text x="12" y="42"
+                  fill="black" fill-opacity="0.18"
+                  font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif"
+                  font-size="32" font-weight="700">
               ${wmTxt}
             </text>
           </pattern>
@@ -69,20 +81,19 @@ export default async function handler(req, res) {
         <rect width="100%" height="100%" fill="url(#wm)"/>
       </svg>`;
 
-    // Wir brauchen die Dimensionen nach dem Resize
     const meta = await img.metadata();
-    const w = meta.width || width, h = meta.height || Math.round(width);
+    const w = meta.width || width;
+    const h = meta.height || Math.round(width);
 
     const overlay = Buffer.from(svg(w, h));
     img = img
       .composite([{ input: overlay, top: 0, left: 0 }])
-      .jpeg({ quality: 92, chromaSubsampling: "4:2:0" }); // effizient & webfreundlich
+      .jpeg({ quality: 92, chromaSubsampling: "4:2:0" });
 
     const out = await img.toBuffer();
 
     // 4) Response
     res.setHeader("Content-Type", "image/jpeg");
-    // Cache kurz halten (OpenAI-URLs sind befristet)
     res.setHeader("Cache-Control", "private, max-age=300, stale-while-revalidate=60");
     return res.status(200).send(out);
   } catch (err) {
