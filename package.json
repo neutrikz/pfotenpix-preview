@@ -11,5 +11,8 @@
     "dev": "vercel dev",
     "start": "vercel dev"
   },
-  "dependencies": {}
+  "dependencies": {
+    "sharp": "^0.33.2",
+    "jimp": "^0.22.10"
+  }
 }
