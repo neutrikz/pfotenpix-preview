@@ -1,12 +1,11 @@
-// /api/generate-fix.js – Full-mask Edit, gpt-image-1, Retries + Backoff, Soft-Fail, Teil-Run (styles)
-// FIX: response_format entfernt (API liefert standardmäßig URLs)
+// /api/generate-fix.js – Full-mask Edit, gpt-image-1, akzeptiert url ODER b64_json, Retries + Soft-Fail
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 export const config = { api: { bodyParser: false } };
 
-// CORS (permissiv – bei Bedarf später einschränken)
+// CORS (permissiv – bei Bedarf einschränken)
 function applyCORS(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -55,6 +54,15 @@ function parseMultipart(buffer, boundary) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const withJitter = ms => Math.round(ms * (0.85 + Math.random() * 0.3));
 
+// Extrahiert URL ODER baut Data-URL aus b64_json
+function extractUrlOrDataUri(json) {
+  const item = json?.data?.[0];
+  if (!item) return null;
+  if (item.url) return item.url;
+  if (item.b64_json) return `data:image/png;base64,${item.b64_json}`;
+  return null;
+}
+
 async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs = 1000 } = {}) {
   let lastError = null;
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -67,11 +75,15 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
       });
       const reqId = resp.headers?.get?.("x-request-id") || resp.headers?.get?.("x-requestid") || "";
       const txt = await resp.text(); let json; try { json = JSON.parse(txt); } catch { json = null; }
-      if (resp.ok && json?.data?.[0]?.url) {
-        console.log(`🟩 [${styleName}] Erfolg${reqId ? " – reqId: " + reqId : ""}`);
-        return json.data[0].url;
+
+      if (resp.ok) {
+        const out = extractUrlOrDataUri(json);
+        if (out) {
+          console.log(`🟩 [${styleName}] Erfolg${reqId ? " – reqId: " + reqId : ""}`);
+          return out;
+        }
       }
-      // Fehlerbehandlung
+      // Fehlerbehandlung + Backoff
       const retryAfter = parseFloat(resp.headers?.get?.("retry-after") || "0");
       const is5xx = resp.status >= 500 && resp.status <= 599;
       const serverErr = json?.error?.type === "server_error";
@@ -94,38 +106,38 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
   throw lastError || new Error("OpenAI fehlgeschlagen");
 }
 
-// Prompts
+// Prompts (Identität sichern)
 function buildPrompts(userText) {
   const guardrails = [
-    "This is a specific real pet photo. Preserve the same species, breed traits, unique markings, proportions and pose",
-    "Do not redraw anatomy; keep natural eye size; do not change muzzle/ears; avoid cartoonification",
-    "Enhance style, lighting and grading only; background stays clean and unobtrusive",
-    "High-resolution, artifact-free result suitable for fine-art printing"
-  ].join(". ") + ".";
+    "This is a specific real pet photo. Preserve the same species, breed traits, unique markings, proportions and pose.",
+    "Do not redraw anatomy; keep natural eye size; do not change muzzle/ears; avoid cartoonification.",
+    "Enhance style, lighting and grading only; background stays clean and unobtrusive.",
+    "High-resolution, artifact-free result suitable for fine-art printing."
+  ].join(" ");
 
   const nat = [
-    "High-end studio portrait retouch: realistic, premium, magazine quality",
-    "Soft diffused key light with subtle rim light; refined micro-contrast in fur; tasteful color grading",
-    "Elegant neutral backdrop with smooth falloff; no over-smoothing, no HDR",
+    "High-end studio portrait retouch: realistic, premium, magazine quality.",
+    "Soft diffused key light with subtle rim light; refined micro-contrast in fur; tasteful color grading.",
+    "Elegant neutral backdrop with smooth falloff; no over-smoothing, no HDR.",
     guardrails,
     userText ? `Integrate this text subtly if provided: "${userText}".` : ""
-  ].join(". ");
+  ].join(" ");
 
   const bw = [
-    "Fine-art black and white conversion (true grayscale)",
-    "Deep blacks, controlled highlights, rich midtones; silver-gelatin print character; delicate film grain",
-    "Crisp whiskers and eyes; dramatic directional lighting",
+    "Fine-art black and white conversion (true grayscale).",
+    "Deep blacks, controlled highlights, rich midtones; silver-gelatin print character; delicate film grain.",
+    "Crisp whiskers and eyes; dramatic directional lighting.",
     guardrails,
     userText ? `If text is provided, render it small and tasteful in monochrome: "${userText}".` : ""
-  ].join(". ");
+  ].join(" ");
 
   const neon = [
-    "Neon pop-art style overlay while preserving exact pet identity, silhouette and face",
-    "Cyan/magenta/orange rim-light strokes following fur contours; smooth neon gradients with gentle halation",
-    "Dark indigo→violet background vignette; no cartoon eyes; keep anatomy unchanged",
+    "Neon pop-art style overlay while preserving exact pet identity, silhouette and face.",
+    "Cyan/magenta/orange rim-light strokes following fur contours; smooth neon gradients with gentle halation.",
+    "Dark indigo→violet background vignette; no cartoon eyes; keep anatomy unchanged.",
     guardrails,
     userText ? `Add matching neon typography: "${userText}".` : ""
-  ].join(". ");
+  ].join(" ");
 
   return { natural: nat, "schwarzweiß": bw, neon };
 }
@@ -170,7 +182,7 @@ export default async function handler(req, res) {
     const failed = [];
 
     for (const style of styles) {
-      await sleep(300 + Math.round(Math.random()*400)); // Cooldown
+      await sleep(300 + Math.round(Math.random()*400)); // kleiner Cooldown
 
       const form = new FormData();
       form.set("model", "gpt-image-1");
@@ -179,11 +191,10 @@ export default async function handler(req, res) {
       form.set("prompt", prompts[style] || "");
       form.set("n", "1");
       form.set("size", "1024x1024");
-      // form.set("response_format","url"); // <— entfernt
 
       try {
-        const url = await fetchOpenAIWithRetry(form, style, { retries: 4, baseDelayMs: 1000 });
-        previews[style] = url;
+        const outUrl = await fetchOpenAIWithRetry(form, style, { retries: 4, baseDelayMs: 1000 });
+        previews[style] = outUrl; // kann http-URL ODER data:URL sein
       } catch (e) {
         console.error(`❌ Stil '${style}' endgültig fehlgeschlagen:`, String(e));
         failed.push(style);
