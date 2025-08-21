@@ -9,7 +9,8 @@ export const config = { api: { bodyParser: false } };
 function applyCORS(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Access-Control-Expose-Headers", "x-request-id,retry-after");
 }
 
 async function readRawBody(req) {
@@ -50,11 +51,9 @@ function parseMultipart(buffer, boundary) {
   return { fields, files };
 }
 
-// Retry-Helper
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const withJitter = ms => Math.round(ms * (0.85 + Math.random() * 0.3));
 
-// Extrahiert URL ODER baut Data-URL aus b64_json
 function extractUrlOrDataUri(json) {
   const item = json?.data?.[0];
   if (!item) return null;
@@ -83,7 +82,6 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
           return out;
         }
       }
-      // Fehlerbehandlung + Backoff
       const retryAfter = parseFloat(resp.headers?.get?.("retry-after") || "0");
       const is5xx = resp.status >= 500 && resp.status <= 599;
       const serverErr = json?.error?.type === "server_error";
@@ -110,14 +108,14 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
 function buildPrompts(userText) {
   const guardrails = [
     "This is a specific real pet photo. Preserve the same species, breed traits, unique markings, proportions and pose.",
-    "Do not redraw anatomy; keep natural eye size; do not change muzzle/ears; avoid cartoonification.",
+    "Do not redraw anatomy; keep natural eye size; do not change muzzle or ears; avoid cartoonification.",
     "Enhance style, lighting and grading only; background stays clean and unobtrusive.",
     "High-resolution, artifact-free result suitable for fine-art printing."
   ].join(" ");
 
   const nat = [
     "High-end studio portrait retouch: realistic, premium, magazine quality.",
-    "Soft diffused key light with subtle rim light; refined micro-contrast in fur; tasteful color grading.",
+    "Soft diffused key light with subtle rim; refined micro-contrast in fur; tasteful color grading.",
     "Elegant neutral backdrop with smooth falloff; no over-smoothing, no HDR.",
     guardrails,
     userText ? `Integrate this text subtly if provided: "${userText}".` : ""
@@ -133,8 +131,8 @@ function buildPrompts(userText) {
 
   const neon = [
     "Neon pop-art style overlay while preserving exact pet identity, silhouette and face.",
-    "Cyan/magenta/orange rim-light strokes following fur contours; smooth neon gradients with gentle halation.",
-    "Dark indigo→violet background vignette; no cartoon eyes; keep anatomy unchanged.",
+    "Cyan, magenta and orange rim-light strokes following fur contours; smooth neon gradients with gentle halation.",
+    "Dark indigo-to-violet vignette background; no cartoon eyes; keep anatomy unchanged.",
     guardrails,
     userText ? `Add matching neon typography: "${userText}".` : ""
   ].join(" ");
@@ -194,7 +192,7 @@ export default async function handler(req, res) {
 
       try {
         const outUrl = await fetchOpenAIWithRetry(form, style, { retries: 4, baseDelayMs: 1000 });
-        previews[style] = outUrl; // kann http-URL ODER data:URL sein
+        previews[style] = outUrl; // http-URL ODER data:URL
       } catch (e) {
         console.error(`❌ Stil '${style}' endgültig fehlgeschlagen:`, String(e));
         failed.push(style);
