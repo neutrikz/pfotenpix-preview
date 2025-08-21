@@ -1,6 +1,8 @@
+// /api/generate-fix.js
 import sharp from 'sharp';
 import Jimp from 'jimp';
-import { FormData, File } from 'formdata-node';
+import FormData from 'form-data';
+import { Readable } from 'stream';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
@@ -72,19 +74,13 @@ export default async function handler(req, res) {
       this.bitmap.data[idx + 2] = alpha;
     });
     image.greyscale().contrast(1.0);
-    await image.writeAsync('/tmp/mask.png');
 
-    // 🧠 Maske resize auf 1024x1024
-    const maskBuffer = await sharp('/tmp/mask.png')
+    const processedMaskBuffer = await image.getBufferAsync(Jimp.MIME_PNG);
+
+    const maskBuffer = await sharp(processedMaskBuffer)
       .threshold(128)
       .resize(1024, 1024, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
       .png()
-      .toBuffer();
-
-    // 📦 Bild resize auf 1024x1024
-    const optimizedBuffer = await sharp(buffer)
-      .png({ compressionLevel: 9 })
-      .resize(1024, 1024, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
       .toBuffer();
 
     const styles = [
@@ -99,8 +95,14 @@ export default async function handler(req, res) {
       console.log(`🎨 Sende an OpenAI (Stil: ${style.name})`);
 
       const form = new FormData();
-      form.append("image", new File([optimizedBuffer], "image.png", { type: "image/png" }));
-      form.append("mask", new File([maskBuffer], "mask.png", { type: "image/png" }));
+      form.append("image", Readable.from(buffer), {
+        filename: "image.png",
+        contentType: "image/png"
+      });
+      form.append("mask", Readable.from(maskBuffer), {
+        filename: "mask.png",
+        contentType: "image/png"
+      });
       form.append("prompt", `${style.prompt}${userText ? ` with text: "${userText}"` : ''}`);
       form.append("n", "1");
       form.append("size", "1024x1024");
@@ -110,7 +112,7 @@ export default async function handler(req, res) {
         method: "POST",
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
-          ...form.headers
+          ...form.getHeaders()
         },
         body: form
       });
