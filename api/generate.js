@@ -1,152 +1,121 @@
-// /api/generate.js – Vercel Serverless Function für PfotenPix mit automatischer Maskenerstellung
+// /api/generate.js
+import fetch from 'node-fetch';
+import sharp from 'sharp';
+import { Readable } from 'stream';
+import Jimp from 'jimp';
+import { v4 as uuidv4 } from 'uuid';
 
-export const config = { api: { bodyParser: false } };
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
+const PFPX_SECRET = 'pixpixpix';
 
-// Body als JSON lesen
-function readJson(req) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      try {
-        resolve(JSON.parse(body || "{}"));
-      } catch (e) {
-        reject(e);
-      }
-    });
-    req.on("error", reject);
-  });
-}
-
-// Bild von URL laden
-async function fetchArrayBuffer(url, timeoutMs = 20000) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { signal: ctrl.signal });
-    if (!response.ok) throw new Error(`fetch ${response.status}`);
-    return await response.arrayBuffer();
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// Prompt-Generator
-function buildPrompt(style) {
-  const basePrompt = {
-    "natürlich": "Erzeuge eine fotorealistische, natürliche Farbversion dieses Haustierfotos. Die Fellstruktur, Augen und Details sollen scharf und realitätsgetreu erscheinen. Keine künstlerische Verfremdung.",
-    "schwarzweiß": "Erzeuge eine elegante Schwarz-Weiß-Version des Fotos. Erhalte alle Details des Tieres mit hohem Dynamikumfang und fein abgestuften Grautönen.",
-    "neon": "Erzeuge eine stilisierte Version dieses Haustierfotos mit Neon-Optik im Pop-Art-Stil. Leuchtende, bunte Akzente umrahmen das Tier, ohne es zu verfälschen."
-  };
-  return basePrompt[style] || "Erzeuge eine fotorealistische Version.";
-}
-
-// Maske über Replicate generieren
-async function getMaskFromReplicate(imageUrl) {
-  const replicateRes = await fetch("https://api.replicate.com/v1/predictions", {
-    method: "POST",
-    headers: {
-      Authorization: `Token ${process.env.REPLICATE_API_TOKEN}`,
-      "Content-Type": "application/json"
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '10mb',
     },
-    body: JSON.stringify({
-     version: "fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003", // neue Version prüfen
-      input: { image: imageUrl }
-    })
-  });
-
-  const replicateData = await replicateRes.json();
-
-  if (!replicateData || !replicateData.urls || !replicateData.urls.get) {
-    console.error("❌ Replicate API-Fehler: Antwort unvollständig:", replicateData);
-    throw new Error("Ungültige Antwort von Replicate API – keine Status-URL.");
-  }
-
-  const statusUrl = replicateData.urls.get;
-
-  for (let i = 0; i < 60; i++) {
-    await new Promise(r => setTimeout(r, 2000));
-    const poll = await fetch(statusUrl, {
-      headers: { Authorization: `Token ${process.env.REPLICATE_API_TOKEN}` }
-    });
-    const pollData = await poll.json();
-    if (pollData.status === "succeeded") {
-      return pollData.output;
-    } else if (pollData.status === "failed") {
-      throw new Error("Maskenerstellung via Replicate fehlgeschlagen.");
-    }
-  }
-
-  throw new Error("Maskenerstellung Timeout nach 60 Sekunden.");
-}
-
+  },
+};
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Only POST allowed" });
-  }
+  if (req.method !== 'POST') return res.status(405).end();
+  if (req.headers['x-pfpx-secret'] !== PFPX_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+
+  const { imageData, userText } = req.body;
+  if (!imageData) return res.status(400).json({ error: 'Kein Bild empfangen.' });
 
   try {
-    const secret = req.headers["x-pfpx-secret"];
-    if (!secret || secret !== process.env.PFPX_SECRET) {
-      return res.status(401).json({ error: "Unauthorized: Invalid Secret" });
-    }
+    // 🖼️ 1. Originalbild dekodieren
+    const buffer = Buffer.from(imageData.replace(/^data:image\/\w+;base64,/, ""), 'base64');
 
-    const body = await readJson(req);
-    const imageUrl = body.image_url;
-    const styles = Array.isArray(body.styles) && body.styles.length
-      ? body.styles
-      : ["natürlich", "schwarzweiß", "neon"];
+    // 🎭 2. Maske mit Replicate erzeugen
+    const replicateRes = await fetch('https://api.replicate.com/v1/predictions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Token ${REPLICATE_API_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        version: "7f7d79d6c3...", // <- deine konkrete Modellversion hier einsetzen
+        input: {
+          image: `data:image/png;base64,${buffer.toString('base64')}`
+        }
+      }),
+    });
 
-    if (!imageUrl) {
-      return res.status(400).json({ error: "Missing image_url" });
-    }
+    const replicateJson = await replicateRes.json();
+    const maskUrl = await pollReplicateResult(replicateJson.id);
 
-    // Masken-URL generieren
-    const maskUrl = await getMaskFromReplicate(imageUrl);
-    if (!maskUrl) throw new Error("Keine Maske generiert.");
+    // 🪄 3. Maske in transparentes PNG umwandeln
+    const maskBuffer = await fetch(maskUrl).then(r => r.arrayBuffer());
+    const maskImage = await Jimp.read(Buffer.from(maskBuffer));
+    maskImage.greyscale().contrast(1).writeAsync("/tmp/mask.png");
+    const transparentMask = await sharp("/tmp/mask.png")
+      .threshold(128)
+      .toColourspace('b-w')
+      .png()
+      .toBuffer();
 
-    // Originalbild & Maske laden
-    const imgBuf  = Buffer.from(await fetchArrayBuffer(imageUrl));
-    const maskBuf = Buffer.from(await fetchArrayBuffer(maskUrl));
-    const imgName = imageUrl.split("/").pop()?.split("?")[0] || "upload.png";
+    // 🎨 4. 3 Stile generieren via OpenAI
+    const styles = [
+      { name: "natural", prompt: "enhance photo naturally, clean and realistic" },
+      { name: "schwarzweiß", prompt: "convert to stylish black and white photo" },
+      { name: "neon", prompt: "apply neon glow, futuristic style" },
+    ];
 
-    // Varianten erzeugen
-    const previews = {};
+    const results = [];
+
     for (const style of styles) {
-      const prompt = buildPrompt(style);
-      const form = new FormData();
-      form.append("model", "gpt-image-1");
-      form.append("prompt", prompt);
-      form.append("image", new Blob([imgBuf]), imgName);
-      form.append("mask", new Blob([maskBuf]), "mask.png");
-      form.append("size", "1024x1024");
-      form.append("n", "1");
-
-      const response = await fetch("https://api.openai.com/v1/images/edits", {
+      const openaiRes = await fetch("https://api.openai.com/v1/images/edits", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
         },
-        body: form,
+        body: JSON.stringify({
+          image: `data:image/png;base64,${buffer.toString('base64')}`,
+          mask: `data:image/png;base64,${transparentMask.toString('base64')}`,
+          prompt: `${style.prompt}${userText ? ` with text: "${userText}"` : ''}`,
+          n: 1,
+          size: "1024x1024",
+          response_format: "url"
+        }),
       });
 
-      if (!response.ok) {
-        const errText = await response.text();
-        console.error("OpenAI Error:", errText);
-        throw new Error(`OpenAI Fehler (${response.status})`);
-      }
-
-      const result = await response.json();
-      const url = result?.data?.[0]?.url;
-      if (!url) throw new Error("Keine Bild-URL von OpenAI zurückgegeben.");
-      previews[style] = url;
+      const openaiJson = await openaiRes.json();
+      results.push({
+        stil: style.name,
+        url: openaiJson.data?.[0]?.url || null,
+        datum: new Date().toISOString(),
+        text: userText || ""
+      });
     }
 
-    return res.status(200).json({ previews });
+    return res.status(200).json({ images: results });
 
-  } catch (err) {
-    console.error("❌ Fehler bei der Generierung:", err.message || err);
-    return res.status(500).json({ error: "Generation failed", detail: err.message || err });
+  } catch (error) {
+    console.error("❌ Fehler in generate.js:", error);
+    return res.status(500).json({ error: 'Interner Serverfehler' });
+  }
+}
+
+// 🕒 Helfer: Ergebnis von Replicate abfragen
+async function pollReplicateResult(id, attempts = 0) {
+  if (attempts > 20) throw new Error("Replicate timeout");
+
+  const res = await fetch(`https://api.replicate.com/v1/predictions/${id}`, {
+    headers: {
+      Authorization: `Token ${REPLICATE_API_TOKEN}`,
+    },
+  });
+  const json = await res.json();
+
+  if (json.status === "succeeded") {
+    return json.output;
+  } else if (json.status === "failed") {
+    throw new Error("Replicate failed");
+  } else {
+    await new Promise(r => setTimeout(r, 1500));
+    return pollReplicateResult(id, attempts + 1);
   }
 }
