@@ -1,6 +1,7 @@
-// /api/generate-fix.js – Debug-Version
 import sharp from 'sharp';
 import Jimp from 'jimp';
+import FormData from 'form-data';
+import { Readable } from 'stream';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
@@ -90,20 +91,27 @@ export default async function handler(req, res) {
     for (const style of styles) {
       console.log(`🎨 Sende an OpenAI (Stil: ${style.name})`);
 
+      const form = new FormData();
+      form.append("image", Readable.from(buffer), {
+        filename: "image.png",
+        contentType: "image/png"
+      });
+      form.append("mask", Readable.from(maskBuffer), {
+        filename: "mask.png",
+        contentType: "image/png"
+      });
+      form.append("prompt", `${style.prompt}${userText ? ` with text: "${userText}"` : ''}`);
+      form.append("n", 1);
+      form.append("size", "1024x1024");
+      form.append("response_format", "url");
+
       const openaiRes = await fetch("https://api.openai.com/v1/images/edits", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
+          ...form.getHeaders()
         },
-        body: JSON.stringify({
-          image: `data:image/png;base64,${Buffer.from(rembgBuffer).toString('base64')}`,
-          mask: `data:image/png;base64,${maskBuffer.toString('base64')}`,
-          prompt: `${style.prompt}${userText ? ` with text: "${userText}"` : ''}`,
-          n: 1,
-          size: "1024x1024",
-          response_format: "url"
-        }),
+        body: form
       });
 
       const openaiJson = await openaiRes.json();
