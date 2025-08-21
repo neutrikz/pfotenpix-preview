@@ -43,7 +43,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        version: '7ed7f24468c2f47bbf4ed5e4b24ac01b78a24f1e1a9263001f21c83c0e3c8b4d',
+        version: 'fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003',
         input: {
           image: `data:image/png;base64,${buffer.toString('base64')}`,
           alpha_matting: true,
