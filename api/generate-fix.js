@@ -2,7 +2,7 @@
 import sharp from 'sharp';
 import Jimp from 'jimp';
 import { FormData } from 'formdata-node';
-import { fileFromBuffer } from 'formdata-node/file-from-buffer';
+import { fileFromBuffer } from 'formdata-node/helpers/file-from-buffer';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
@@ -10,7 +10,9 @@ const PFPX_SECRET = 'pixpixpix';
 
 export const config = {
   api: {
-    bodyParser: { sizeLimit: '10mb' },
+    bodyParser: {
+      sizeLimit: '10mb',
+    },
   },
 };
 
@@ -24,6 +26,7 @@ export default async function handler(req, res) {
   }
 
   const { imageData, userText } = req.body;
+
   if (!imageData) {
     console.warn("❌ Kein Bild erhalten");
     return res.status(400).json({ error: 'Kein Bild empfangen.' });
@@ -31,7 +34,14 @@ export default async function handler(req, res) {
 
   try {
     console.log("📥 Bild empfangen, beginne Verarbeitung");
-    const inputBuffer = Buffer.from(imageData.replace(/^data:image\/\w+;base64,/, ""), 'base64');
+
+    const originalBuffer = Buffer.from(imageData.replace(/^data:image\/\w+;base64,/, ""), 'base64');
+
+    // Resize auf 1024x1024 für OpenAI
+    const resizedBuffer = await sharp(originalBuffer)
+      .resize(1024, 1024, { fit: 'cover' })
+      .png()
+      .toBuffer();
 
     console.log("🎭 Rufe RemBG-API auf");
     const replicateRes = await fetch('https://api.replicate.com/v1/predictions', {
@@ -43,7 +53,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         version: 'fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003',
         input: {
-          image: `data:image/png;base64,${inputBuffer.toString('base64')}`,
+          image: `data:image/png;base64,${resizedBuffer.toString('base64')}`,
           alpha_matting: true,
         },
       }),
@@ -59,10 +69,10 @@ export default async function handler(req, res) {
     const outputUrl = await pollReplicateResult(replicateJson.id);
     console.log("📤 Maske von RemBG erhalten:", outputUrl);
 
-    const rembgBuffer = Buffer.from(await fetch(outputUrl).then(r => r.arrayBuffer()));
+    const rembgBuffer = await fetch(outputUrl).then(r => r.arrayBuffer());
 
     console.log("🖼️ Maske verarbeiten mit Jimp");
-    const image = await Jimp.read(rembgBuffer);
+    const image = await Jimp.read(Buffer.from(rembgBuffer));
     image.scan(0, 0, image.bitmap.width, image.bitmap.height, function (x, y, idx) {
       const alpha = this.bitmap.data[idx + 3];
       this.bitmap.data[idx + 0] = alpha;
@@ -70,15 +80,8 @@ export default async function handler(req, res) {
       this.bitmap.data[idx + 2] = alpha;
     });
     image.greyscale().contrast(1.0);
-
-    // Resize auf 1024x1024 für OpenAI
-    const resized = await image.contain(1024, 1024).getBufferAsync(Jimp.MIME_PNG);
-
-    const maskBuffer = await sharp(resized)
-      .threshold(128)
-      .resize(1024, 1024) // Sicherheitshalber nochmal erzwingen
-      .png()
-      .toBuffer();
+    await image.resize(1024, 1024); // Resize Mask auf 1024x1024
+    const maskBuffer = await image.getBufferAsync(Jimp.MIME_PNG);
 
     const styles = [
       { name: "natural", prompt: "enhance photo naturally, clean and realistic" },
@@ -92,12 +95,12 @@ export default async function handler(req, res) {
       console.log(`🎨 Sende an OpenAI (Stil: ${style.name})`);
 
       const form = new FormData();
+      form.set("image", await fileFromBuffer(resizedBuffer, "image.png"));
+      form.set("mask", await fileFromBuffer(maskBuffer, "mask.png"));
       form.set("prompt", `${style.prompt}${userText ? ` with text: "${userText}"` : ''}`);
       form.set("n", "1");
       form.set("size", "1024x1024");
       form.set("response_format", "url");
-      form.set("image", await fileFromBuffer(inputBuffer, "image.png"));
-      form.set("mask", await fileFromBuffer(maskBuffer, "mask.png"));
 
       const openaiRes = await fetch("https://api.openai.com/v1/images/edits", {
         method: "POST",
@@ -108,6 +111,7 @@ export default async function handler(req, res) {
       });
 
       const openaiJson = await openaiRes.json();
+
       if (!openaiJson?.data?.[0]?.url) {
         console.error(`❌ OpenAI-Fehler bei Stil '${style.name}':`, openaiJson);
         return res.status(500).json({ error: `OpenAI konnte den Stil '${style.name}' nicht generieren.` });
@@ -132,7 +136,7 @@ export default async function handler(req, res) {
   }
 }
 
-// ⏳ Helper-Funktion für Replicate-Status
+// ⏳ Helper
 async function pollReplicateResult(id, attempts = 0) {
   if (attempts > 20) throw new Error("Replicate timeout");
 
@@ -143,9 +147,12 @@ async function pollReplicateResult(id, attempts = 0) {
   });
   const json = await res.json();
 
-  if (json.status === "succeeded") return json.output;
-  if (json.status === "failed") throw new Error("Replicate failed");
-
-  await new Promise(r => setTimeout(r, 1500));
-  return pollReplicateResult(id, attempts + 1);
+  if (json.status === "succeeded") {
+    return json.output;
+  } else if (json.status === "failed") {
+    throw new Error("Replicate failed");
+  } else {
+    await new Promise(r => setTimeout(r, 1500));
+    return pollReplicateResult(id, attempts + 1);
+  }
 }
