@@ -1,4 +1,5 @@
 // /api/generate-fix.js – Full-mask Edit, gpt-image-1, Retries + Backoff, Soft-Fail, Teil-Run (styles)
+// FIX: response_format entfernt (API liefert standardmäßig URLs)
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
@@ -126,11 +127,7 @@ function buildPrompts(userText) {
     userText ? `Add matching neon typography: "${userText}".` : ""
   ].join(". ");
 
-  return {
-    natural: nat,
-    "schwarzweiß": bw,
-    neon
-  };
+  return { natural: nat, "schwarzweiß": bw, neon };
 }
 
 export default async function handler(req, res) {
@@ -149,9 +146,7 @@ export default async function handler(req, res) {
       const f = files["file"]; if (!f?.buffer) return res.status(400).json({ error: "No file uploaded" });
       sourceBuffer = f.buffer;
       userText = (fields["custom_text"] || fields["text"] || "").toString();
-      if (fields["styles"]) {
-        try { const s = JSON.parse(fields["styles"]); if (Array.isArray(s)) requestedStyles = s; } catch {}
-      }
+      if (fields["styles"]) { try { const s = JSON.parse(fields["styles"]); if (Array.isArray(s)) requestedStyles = s; } catch {} }
     } else if (ctype.includes("application/json")) {
       const body = JSON.parse((await readRawBody(req)).toString("utf8") || "{}");
       const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/,"");
@@ -175,8 +170,7 @@ export default async function handler(req, res) {
     const failed = [];
 
     for (const style of styles) {
-      // kleiner „Cool-Down“ zwischen den Aufrufen
-      await sleep(300 + Math.round(Math.random()*400));
+      await sleep(300 + Math.round(Math.random()*400)); // Cooldown
 
       const form = new FormData();
       form.set("model", "gpt-image-1");
@@ -185,7 +179,7 @@ export default async function handler(req, res) {
       form.set("prompt", prompts[style] || "");
       form.set("n", "1");
       form.set("size", "1024x1024");
-      form.set("response_format", "url");
+      // form.set("response_format","url"); // <— entfernt
 
       try {
         const url = await fetchOpenAIWithRetry(form, style, { retries: 4, baseDelayMs: 1000 });
