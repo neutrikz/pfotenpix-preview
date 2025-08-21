@@ -1,8 +1,7 @@
+// /api/generate-fix.js
 import sharp from 'sharp';
 import Jimp from 'jimp';
-import { Readable } from 'stream';
-import { FormData } from 'formdata-node';
-import { fileFromBuffer } from 'formdata-node/file-from-path';
+import { FormData, File } from 'formdata-node';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
@@ -93,17 +92,18 @@ export default async function handler(req, res) {
       console.log(`🎨 Sende an OpenAI (Stil: ${style.name})`);
 
       const form = new FormData();
-      form.set("image", await fileFromBuffer(buffer, "image.png"));
-      form.set("mask", await fileFromBuffer(maskBuffer, "mask.png"));
-      form.set("prompt", `${style.prompt}${userText ? ` with text: "${userText}"` : ''}`);
-      form.set("n", "1");
-      form.set("size", "1024x1024");
-      form.set("response_format", "url");
+      form.append("image", new File([buffer], "image.png", { type: "image/png" }));
+      form.append("mask", new File([maskBuffer], "mask.png", { type: "image/png" }));
+      form.append("prompt", `${style.prompt}${userText ? ` with text: "${userText}"` : ''}`);
+      form.append("n", "1");
+      form.append("size", "1024x1024");
+      form.append("response_format", "url");
 
       const openaiRes = await fetch("https://api.openai.com/v1/images/edits", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
+          ...form.headers
         },
         body: form
       });
