@@ -1,9 +1,7 @@
-// /api/generate.js
+// /api/generate.js – mit RemBG-Modell
 import fetch from 'node-fetch';
 import sharp from 'sharp';
-import { Readable } from 'stream';
 import Jimp from 'jimp';
-import { v4 as uuidv4 } from 'uuid';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
@@ -25,10 +23,10 @@ export default async function handler(req, res) {
   if (!imageData) return res.status(400).json({ error: 'Kein Bild empfangen.' });
 
   try {
-    // 🖼️ 1. Originalbild dekodieren
+    // 🖼️ 1. Bild dekodieren
     const buffer = Buffer.from(imageData.replace(/^data:image\/\w+;base64,/, ""), 'base64');
 
-    // 🎭 2. Maske mit Replicate erzeugen
+    // 🎭 2. Hintergrund entfernen mit RemBG (Replicate)
     const replicateRes = await fetch('https://api.replicate.com/v1/predictions', {
       method: 'POST',
       headers: {
@@ -36,30 +34,38 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        version: "7f7d79d6c3...", // <- deine konkrete Modellversion hier einsetzen
+        version: '7ed7f24468c2f47bbf4ed5e4b24ac01b78a24f1e1a9263001f21c83c0e3c8b4d', // RemBG v1.4.1
         input: {
-          image: `data:image/png;base64,${buffer.toString('base64')}`
-        }
+          image: `data:image/png;base64,${buffer.toString('base64')}`,
+          alpha_matting: true
+        },
       }),
     });
 
     const replicateJson = await replicateRes.json();
-    const maskUrl = await pollReplicateResult(replicateJson.id);
+    const outputUrl = await pollReplicateResult(replicateJson.id);
+    const rembgBuffer = await fetch(outputUrl).then(r => r.arrayBuffer());
 
-    // 🪄 3. Maske in transparentes PNG umwandeln
-    const maskBuffer = await fetch(maskUrl).then(r => r.arrayBuffer());
-    const maskImage = await Jimp.read(Buffer.from(maskBuffer));
-    maskImage.greyscale().contrast(1).writeAsync("/tmp/mask.png");
-    const transparentMask = await sharp("/tmp/mask.png")
+    // 🪄 3. Maske aus dem Alphakanal erzeugen
+    const image = await Jimp.read(Buffer.from(rembgBuffer));
+    image.scan(0, 0, image.bitmap.width, image.bitmap.height, function (x, y, idx) {
+      const alpha = this.bitmap.data[idx + 3];
+      this.bitmap.data[idx + 0] = alpha;
+      this.bitmap.data[idx + 1] = alpha;
+      this.bitmap.data[idx + 2] = alpha;
+    });
+    image.greyscale().contrast(1.0);
+    await image.writeAsync('/tmp/mask.png');
+
+    const maskBuffer = await sharp('/tmp/mask.png')
       .threshold(128)
-      .toColourspace('b-w')
       .png()
       .toBuffer();
 
-    // 🎨 4. 3 Stile generieren via OpenAI
+    // 🎨 4. OpenAI Variationen erzeugen
     const styles = [
       { name: "natural", prompt: "enhance photo naturally, clean and realistic" },
-      { name: "schwarzweiß", prompt: "convert to stylish black and white photo" },
+      { name: "schwarzweiß", prompt: "convert to black and white stylish photo" },
       { name: "neon", prompt: "apply neon glow, futuristic style" },
     ];
 
@@ -73,8 +79,8 @@ export default async function handler(req, res) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          image: `data:image/png;base64,${buffer.toString('base64')}`,
-          mask: `data:image/png;base64,${transparentMask.toString('base64')}`,
+          image: `data:image/png;base64,${Buffer.from(rembgBuffer).toString('base64')}`,
+          mask: `data:image/png;base64,${maskBuffer.toString('base64')}`,
           prompt: `${style.prompt}${userText ? ` with text: "${userText}"` : ''}`,
           n: 1,
           size: "1024x1024",
@@ -93,13 +99,13 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ images: results });
 
-  } catch (error) {
-    console.error("❌ Fehler in generate.js:", error);
+  } catch (err) {
+    console.error("❌ Fehler in generate.js:", err);
     return res.status(500).json({ error: 'Interner Serverfehler' });
   }
 }
 
-// 🕒 Helfer: Ergebnis von Replicate abfragen
+// ⏳ Wartefunktion für Replicate
 async function pollReplicateResult(id, attempts = 0) {
   if (attempts > 20) throw new Error("Replicate timeout");
 
