@@ -1,17 +1,15 @@
-// /api/generate-fix.js – Stabil: unterstützt multipart/form-data (WP) & JSON (Fallback)
+// /api/generate-fix.js – Stabil: multipart/form-data (WP) & JSON (Fallback)
 
 import sharp from "sharp";
 import Jimp from "jimp";
-import { FormData } from "formdata-node";
-import { Readable } from "stream";
+import { FormData, File } from "formdata-node"; // ⬅️ File nutzen für Upload-Parts
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
 const PFPX_SECRET = "pixpixpix";
 
-// WICHTIG: bodyParser aus, damit multipart funktioniert
 export const config = {
-  api: { bodyParser: false },
+  api: { bodyParser: false }, // wichtig für multipart
 };
 
 // ---- Utils ----
@@ -22,26 +20,26 @@ async function readRawBody(req) {
 }
 
 function parseMultipart(buffer, boundary) {
-  // Minimal-Parser: liest nur Felder + 1..n Dateien
   const CRLF = "\r\n";
   const delim = `--${boundary}`;
+  const closeDelim = `--${boundary}--`;
   const body = buffer.toString("binary");
 
-  const blocks = body.split(delim).filter((b) => b && b !== "--");
+  const parts = body
+    .split(delim)
+    .filter((p) => p && p !== "--" && p !== closeDelim);
+
   const fields = {};
   const files = {};
 
-  for (let part of blocks) {
-    // entferne führendes CRLF
-    if (part.startsWith(CRLF)) part = part.slice(CRLF.length);
-
-    const idx = part.indexOf(CRLF + CRLF);
+  for (let rawPart of parts) {
+    if (rawPart.startsWith(CRLF)) rawPart = rawPart.slice(CRLF.length);
+    const sep = CRLF + CRLF;
+    const idx = rawPart.indexOf(sep);
     if (idx === -1) continue;
 
-    const rawHeaders = part.slice(0, idx);
-    let rawContent = part.slice(idx + (CRLF + CRLF).length);
-
-    // trailing CRLF abschneiden
+    const rawHeaders = rawPart.slice(0, idx);
+    let rawContent = rawPart.slice(idx + sep.length);
     if (rawContent.endsWith(CRLF)) rawContent = rawContent.slice(0, -CRLF.length);
 
     const headers = {};
@@ -66,6 +64,7 @@ function parseMultipart(buffer, boundary) {
       fields[name] = Buffer.from(rawContent, "binary").toString("utf8");
     }
   }
+
   return { fields, files };
 }
 
@@ -157,7 +156,7 @@ export default async function handler(req, res) {
 
     const rembgBuffer = Buffer.from(await (await fetch(maskUrl)).arrayBuffer());
 
-    // --- 2) Maske erzeugen & beides auf 1024x1024 bringen ---
+    // --- 2) Maske erzeugen & beide Bilder auf 1024x1024 PNG bringen ---
     console.log("🖼️ Maske verarbeiten mit Jimp");
     const jimg = await Jimp.read(rembgBuffer);
     jimg.scan(0, 0, jimg.bitmap.width, jimg.bitmap.height, function (x, y, idx) {
@@ -191,9 +190,11 @@ export default async function handler(req, res) {
 
     for (const style of styles) {
       console.log(`🎨 Sende an OpenAI (Stil: ${style.name})`);
+
+      // ⬇️ WICHTIG: Datei-Parts als File-Objekte übergeben (kein Readable/Buffer direkt)
       const form = new FormData();
-      form.set("image", Readable.from(inputPng), "image.png");
-      form.set("mask", Readable.from(maskBuffer), "mask.png");
+      form.set("image", new File([inputPng], "image.png", { type: "image/png" }));
+      form.set("mask",  new File([maskBuffer], "mask.png",   { type: "image/png" }));
       form.set("prompt", `${style.prompt}${userText ? ` with text: "${userText}"` : ""}`);
       form.set("n", "1");
       form.set("size", "1024x1024");
