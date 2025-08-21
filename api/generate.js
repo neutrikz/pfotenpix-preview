@@ -1,5 +1,4 @@
 // /api/generate.js – mit RemBG-Modell
-import fetch from 'node-fetch';
 import sharp from 'sharp';
 import Jimp from 'jimp';
 
