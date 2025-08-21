@@ -1,4 +1,3 @@
-// /api/generate-fix.js
 import sharp from 'sharp';
 import Jimp from 'jimp';
 import { FormData, File } from 'formdata-node';
@@ -75,23 +74,26 @@ export default async function handler(req, res) {
     image.greyscale().contrast(1.0);
     await image.writeAsync('/tmp/mask.png');
 
+    // 🧠 Maske resize auf 1024x1024
     const maskBuffer = await sharp('/tmp/mask.png')
       .threshold(128)
+      .resize(1024, 1024, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
       .png()
       .toBuffer();
 
-    // 📦 Bild für OpenAI vorbereiten (resized + max. komprimiert)
+    // 📦 Bild resize auf 1024x1024
     const optimizedBuffer = await sharp(buffer)
       .png({ compressionLevel: 9 })
       .resize(1024, 1024, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
       .toBuffer();
 
-    const results = [];
     const styles = [
       { name: "natural", prompt: "enhance photo naturally, clean and realistic" },
       { name: "schwarzweiß", prompt: "convert to black and white stylish photo" },
       { name: "neon", prompt: "apply neon glow, futuristic style" },
     ];
+
+    const results = [];
 
     for (const style of styles) {
       console.log(`🎨 Sende an OpenAI (Stil: ${style.name})`);
