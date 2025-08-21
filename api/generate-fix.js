@@ -1,4 +1,4 @@
-// /api/generate-fix.js – Stabil (ohne Maske/Replicate), verfeinerte Stil-Prompts
+// /api/generate-fix.js – Stabil (ohne Maske/Replicate), verfeinerte Stil-Prompts + Retries
 
 import sharp from "sharp";
 import { FormData, File } from "formdata-node"; // ⬅️ File nutzen für Upload-Parts
@@ -66,9 +66,71 @@ function parseMultipart(buffer, boundary) {
   return { fields, files };
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const withJitter = (ms) => Math.round(ms * (0.85 + Math.random() * 0.3)); // ±15%
+
+async function fetchOpenAIWithRetry(form, styleName, { retries = 3, baseDelayMs = 900 } = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      console.log(`🟦 [${styleName}] OpenAI-Call Versuch ${attempt}/${retries}`);
+      const resp = await fetch("https://api.openai.com/v1/images/edits", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, ...form.headers },
+        body: form,
+      });
+
+      const reqId = resp.headers?.get?.("x-request-id") || resp.headers?.get?.("x-requestid") || "";
+      const text = await resp.text();
+      let json;
+      try { json = JSON.parse(text); } catch { json = null; }
+
+      // Erfolgsfall
+      if (resp.ok && json?.data?.[0]?.url) {
+        console.log(`🟩 [${styleName}] Erfolg (Versuch ${attempt})${reqId ? " – reqId: " + reqId : ""}`);
+        return json.data[0].url;
+      }
+
+      // Fehler klassifizieren
+      const is5xx = resp.status >= 500 && resp.status <= 599;
+      const isServerErrPayload = json?.error?.type === "server_error";
+      const shouldRetry = is5xx || isServerErrPayload;
+
+      console.warn(`🟨 [${styleName}] Fehler (Versuch ${attempt})${reqId ? " – reqId: " + reqId : ""}`, {
+        status: resp.status,
+        body: json || text,
+      });
+
+      if (!shouldRetry || attempt === retries) {
+        // Kein Retry mehr → harten Fehler zurückreichen
+        const msg =
+          json?.error?.message ||
+          `OpenAI-Fehler (HTTP ${resp.status}) nach ${attempt} Versuch(en).`;
+        lastError = new Error(msg);
+        break;
+      }
+
+      // Backoff
+      const delay = withJitter(baseDelayMs * Math.pow(2, attempt - 1));
+      console.log(`⏳ [${styleName}] Retry in ${delay}ms …`);
+      await sleep(delay);
+
+    } catch (err) {
+      // Netzwerk-/Fetch-Fehler → retrybar
+      lastError = err;
+      console.warn(`🟨 [${styleName}] Netzwerk-/Fetch-Error (Versuch ${attempt}):`, String(err));
+      if (attempt === retries) break;
+      const delay = withJitter(baseDelayMs * Math.pow(2, attempt - 1));
+      console.log(`⏳ [${styleName}] Retry in ${delay}ms …`);
+      await sleep(delay);
+    }
+  }
+  throw lastError || new Error("Unbekannter Fehler bei OpenAI-Request");
+}
+
 // ---- Handler ----
 export default async function handler(req, res) {
-  console.log("✅ generate-fix.js gestartet (ohne Maske)");
+  console.log("✅ generate-fix.js gestartet (ohne Maske + Retries)");
 
   if (req.method !== "POST") return res.status(405).end();
 
@@ -156,7 +218,7 @@ export default async function handler(req, res) {
       { name: "neon",        prompt: promptNeon },
     ];
 
-    // --- 3) OpenAI Images Edits (ohne Maske → gesamtes Bild wird stilisiert) ---
+    // --- 3) OpenAI Images Edits (ohne Maske → gesamtes Bild wird stilisiert) mit Retries ---
     const previews = {}; // { stilName: url }
 
     for (const style of styles) {
@@ -169,20 +231,16 @@ export default async function handler(req, res) {
       form.set("size", "1024x1024");
       form.set("response_format", "url");
 
-      const oi = await fetch("https://api.openai.com/v1/images/edits", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, ...form.headers },
-        body: form,
-      });
-      const oiJson = await oi.json();
-      if (!oi.ok || !oiJson?.data?.[0]?.url) {
-        console.error(`❌ OpenAI-Fehler bei Stil '${style.name}':`, oiJson);
+      try {
+        const url = await fetchOpenAIWithRetry(form, style.name, { retries: 3, baseDelayMs: 900 });
+        previews[style.name] = url;
+        console.log(`✅ Stil '${style.name}' erfolgreich generiert`);
+      } catch (err) {
+        console.error(`❌ OpenAI-Fehler bei Stil '${style.name}' nach Retries:`, String(err));
         return res
-          .status(oi.status || 500)
-          .json({ error: `OpenAI konnte den Stil '${style.name}' nicht generieren.` });
+          .status(502)
+          .json({ error: `OpenAI konnte den Stil '${style.name}' nach mehreren Versuchen nicht generieren.` });
       }
-      previews[style.name] = oiJson.data[0].url;
-      console.log(`✅ Stil '${style.name}' erfolgreich generiert`);
     }
 
     console.log("✅ Alle Varianten generiert");
