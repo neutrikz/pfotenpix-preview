@@ -134,7 +134,7 @@ export default async function handler(req, res) {
     // 3) Font laden & in SVG einbetten
     const font = loadFontFromPublic(); // { b64, mime, fmt } | null
     const fontFace = font
-      ? `@font-face{font-family:'pfpxwm';src:url(data:${font.mime};base64,${font.b64}) format('${font.fmt}');font-weight:400;font-style:normal;font-display:block;}`
+      ? `@font-face{font-family:'pfpxwm';src:url(data:${font.mime};base64,${font.b64}) format('${font.fmt}');font-weight:600;font-style:normal;font-display:block;}`
       : "";
 
     const family = font ? "pfpxwm" : "DejaVu Sans, Liberation Sans, Arial, Helvetica, sans-serif";
@@ -147,9 +147,8 @@ export default async function handler(req, res) {
             ${fontFace}
             text{
               font-family:${family};
-              font-weight:700;
+              font-weight:600;
               text-rendering:optimizeLegibility;
-              -webkit-font-smoothing:antialiased;
             }
           </style>
           <pattern id="wm" width="${tileW}" height="${tileH}" patternUnits="userSpaceOnUse"
