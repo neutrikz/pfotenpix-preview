@@ -29,15 +29,13 @@ export default async function handler(req, res) {
     const width = Math.min(parseInt(req.query.w || "1200", 10) || 1200, 3000);
     const wmTxt = esc(req.query.wm || "PFOTENPIX • PREVIEW");
 
-    // Neu: sichtbarer & steuerbarer Look
-    const opacity = Math.min(Math.max(parseFloat(req.query.op || "0.32"), 0.05), 0.6); // 0.32 default
+    // Sichtbar & anpassbar:
+    const opacity = Math.min(Math.max(parseFloat(req.query.op || "0.32"), 0.05), 0.6);  // 0.32 default
     const fontSize = Math.min(Math.max(parseInt(req.query.fs || "42", 10) || 42, 16), 120);
     const tileW    = Math.min(Math.max(parseInt(req.query.tw || "360", 10) || 360, 120), 600);
     const tileH    = Math.min(Math.max(parseInt(req.query.th || "300", 10) || 300, 100), 600);
     const angle    = parseFloat(req.query.ang || "-30");
-
-    // Optionales Ausgabeformat (jpeg/webp/png), default jpeg
-    const fmt = String((req.query.fmt || "jpeg")).toLowerCase();
+    const fmt      = String((req.query.fmt || "jpeg")).toLowerCase(); // jpeg/webp/png
 
     const upstream = await fetch(u);
     if (!upstream.ok) {
@@ -53,7 +51,7 @@ export default async function handler(req, res) {
         <defs>
           <pattern id="wm" width="${tileW}" height="${tileH}" patternUnits="userSpaceOnUse"
                    patternTransform="rotate(${angle})">
-            <!-- Doppelte Schicht: sichtbarer auf hell & dunkel -->
+            <!-- Schwarz mit weißem Stroke: sichtbar auf hell & dunkel -->
             <text x="12" y="${Math.round(fontSize)}"
               fill="black" fill-opacity="${opacity}"
               stroke="white" stroke-opacity="${Math.min(opacity*0.75,0.5)}" stroke-width="1.8"
@@ -67,10 +65,9 @@ export default async function handler(req, res) {
     const meta = await img.metadata();
     const w = meta.width || width, h = meta.height || Math.round(width);
     const overlay = Buffer.from(svg(w,h));
-
     img = img.composite([{ input: overlay, top:0, left:0 }]);
 
-    // Ausgabeformat anwenden
+    // Ausgabeformat
     if (fmt === "webp") {
       img = img.webp({ quality: 90 });
       res.setHeader("Content-Type", "image/webp");
