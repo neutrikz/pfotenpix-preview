@@ -81,12 +81,20 @@ export default async function handler(req, res) {
     // Quelle besorgen (http/https ODER data:)
     const srcBuf = await fetchUpstream(u);
 
-    // Bild skalieren
-    let img = sharp(srcBuf).resize({ width, fit: "inside", withoutEnlargement: true });
+    // --- WICHTIGER FIX ---
+    // 1) Zuerst auf Zielbreite verkleinern (kein Vergrößern)
+    const resizedBuf = await sharp(srcBuf)
+      .resize({ width, fit: "inside", withoutEnlargement: true })
+      .toBuffer();
 
-    // SVG-Wasserzeichen kacheln
-    const svg = (w,h)=>`
-      <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+    // 2) Danach die tatsächlichen Endmaße ermitteln
+    const meta = await sharp(resizedBuf).metadata();
+    const w = meta.width  || width;
+    const h = meta.height || Math.round((w * 3) / 4);
+
+    // 3) SVG-Wasserzeichen exakt in Endmaßen bauen
+    const svg = (W,H)=>`
+      <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">
         <defs>
           <pattern id="wm" width="${tileW}" height="${tileH}" patternUnits="userSpaceOnUse"
                    patternTransform="rotate(${angle})">
@@ -99,11 +107,10 @@ export default async function handler(req, res) {
         </defs>
         <rect width="100%" height="100%" fill="url(#wm)"/>
       </svg>`;
+    const overlay = Buffer.from(svg(w, h));
 
-    const meta = await img.metadata();
-    const w = meta.width || width, h = meta.height || Math.round(width * 0.75);
-    const overlay = Buffer.from(svg(w,h));
-    img = img.composite([{ input: overlay, top: 0, left: 0 }]);
+    // 4) Composite mit exakt gleich großem Overlay
+    let img = sharp(resizedBuf).composite([{ input: overlay, top: 0, left: 0 }]);
 
     // Ausgabeformat
     if (fmt === "webp") {
