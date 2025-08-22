@@ -1,4 +1,5 @@
-// /api/preview-proxy.js – Wasserzeichen-Proxy (CORS offen, sichtbares WM, http/https + data: Support, UA+Referer)
+// /api/preview-proxy.js – Wasserzeichen-Proxy (CORS offen, sichtbares WM, http/https + data: Support)
+// Mit Referer/User-Agent-Headern, damit Hotlink-/Firewall-Schutz den Upstream zulässt
 import sharp from "sharp";
 export const config = { api: { bodyParser: false } };
 
@@ -25,34 +26,38 @@ function bufferFromDataURL(u) {
 }
 
 async function fetchUpstream(u) {
-  // Für WordPress/Hoster, die strenge Header erwarten:
-  let referer = "";
-  try { referer = new URL(u).origin + "/"; } catch (_) {}
-
-  const controller = new AbortController();
-  const to = setTimeout(() => controller.abort(), 15000); // 15s Timeout
-
-  try {
-    const res = await fetch(u, {
-      method: "GET",
-      redirect: "follow",
-      headers: {
-        // Browser-ähnlicher UA + passende Accepts
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 PfotenPixProxy/1.0",
-        "Accept":
-          "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        "Accept-Language": "de,en;q=0.8",
-        ...(referer ? { Referer: referer } : {}),
-      },
-      signal: controller.signal,
-    });
-    clearTimeout(to);
-    return res;
-  } catch (e) {
-    clearTimeout(to);
-    throw e;
+  // data: direkt zurückgeben
+  if (/^data:/i.test(u)) {
+    const buf = bufferFromDataURL(u);
+    if (!buf) throw new Error("bad data: url");
+    return buf;
   }
+
+  const url = new URL(u);
+  const ua  = "pfpx-preview-proxy/1.3 (+https://pfotenpix.de)";
+  const baseHeaders = {
+    "user-agent": ua,
+    "accept": "image/*,*/*;q=0.8",
+    // viele Hotlink-Protections erwarten irgendeinen Referer; wir nehmen die Origin der Ziel-URL
+    "referer": url.origin + "/",
+    "accept-language": "de,en;q=0.9"
+  };
+
+  // 1. Versuch mit Origin-Referer
+  let r = await fetch(u, { headers: baseHeaders, redirect: "follow", cache: "no-store" });
+
+  // 2. Fallback: generischer Referer auf deine Seite (für manche strenge Regeln)
+  if (!r.ok) {
+    const fallbackHeaders = { ...baseHeaders, referer: "https://pfotenpix.de/" };
+    r = await fetch(u, { headers: fallbackHeaders, redirect: "follow", cache: "no-store" });
+  }
+
+  if (!r.ok) {
+    const txt = await r.text().catch(() => "");
+    throw new Error(`upstream ${r.status} ${r.statusText} :: ${txt.slice(0, 400)}`);
+  }
+
+  return Buffer.from(await r.arrayBuffer());
 }
 
 export default async function handler(req, res) {
@@ -74,30 +79,12 @@ export default async function handler(req, res) {
     const fmt     = String((req.query.fmt || "jpeg")).toLowerCase(); // jpeg/webp/png
 
     // Quelle besorgen (http/https ODER data:)
-    let srcBuf = null;
-    if (/^data:/i.test(u)) {
-      srcBuf = bufferFromDataURL(u);
-      if (!srcBuf) return res.status(400).json({ error: "bad data: url" });
-    } else {
-      const upstream = await fetchUpstream(u);
-      if (!upstream.ok) {
-        const snippet = (await upstream.text().catch(()=> "")).slice(0, 400);
-        return res.status(502).json({
-          error: `upstream ${upstream.status}`,
-          details: snippet
-        });
-      }
-      const ct = upstream.headers.get("content-type") || "";
-      // Wenn Host HTML liefert (z.B. WAF-Blockseite), nicht an Sharp geben
-      if (ct && !/^image\//i.test(ct)) {
-        const snippet = (await upstream.text().catch(()=> "")).slice(0, 400);
-        return res.status(502).json({ error: "non-image upstream", details: snippet });
-      }
-      srcBuf = Buffer.from(await upstream.arrayBuffer());
-    }
+    const srcBuf = await fetchUpstream(u);
 
-    let img = sharp(srcBuf).resize({ width, fit:"inside", withoutEnlargement:true });
+    // Bild skalieren
+    let img = sharp(srcBuf).resize({ width, fit: "inside", withoutEnlargement: true });
 
+    // SVG-Wasserzeichen kacheln
     const svg = (w,h)=>`
       <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
         <defs>
@@ -116,8 +103,9 @@ export default async function handler(req, res) {
     const meta = await img.metadata();
     const w = meta.width || width, h = meta.height || Math.round(width * 0.75);
     const overlay = Buffer.from(svg(w,h));
-    img = img.composite([{ input: overlay, top:0, left:0 }]);
+    img = img.composite([{ input: overlay, top: 0, left: 0 }]);
 
+    // Ausgabeformat
     if (fmt === "webp") {
       img = img.webp({ quality: 90 });
       res.setHeader("Content-Type", "image/webp");
@@ -130,11 +118,16 @@ export default async function handler(req, res) {
     }
 
     const out = await img.toBuffer();
-    res.setHeader("Cache-Control", "private, max-age=300, stale-while-revalidate=60");
-    res.setHeader("Content-Disposition", "inline; filename=\"pfpx-preview."+ (fmt==="png"?"png":fmt==="webp"?"webp":"jpg") +"\"");
+    // caching moderat + SWR
+    res.setHeader("Cache-Control", "public, max-age=600, stale-while-revalidate=60");
+    // kleiner Debug-Hinweis (optional)
+    res.setHeader("X-PFPX-Proxy", "ok");
     return res.status(200).send(out);
+
   } catch (err) {
     console.error("preview-proxy error:", err);
-    return res.status(500).json({ error:"proxy failure" });
+    // Fehler klar beantworten (hilft beim Debugging, statt kaputtem <img>)
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(502).send(JSON.stringify({ error: "proxy failure", details: String(err.message || err).slice(0, 400) }));
   }
 }
