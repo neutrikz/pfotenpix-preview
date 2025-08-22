@@ -1,6 +1,9 @@
 // /api/preview-proxy.js – Wasserzeichen-Proxy (CORS offen, sichtbares WM, http/https + data: Support)
-// Mit Referer/User-Agent-Headern, damit Hotlink-/Firewall-Schutz den Upstream zulässt
+// Mit eingebetteter Schrift (Base64 @font-face) – liest WOFF/WOFF2/TTF aus /public/fonts
 import sharp from "sharp";
+import fs from "node:fs";
+import path from "node:path";
+
 export const config = { api: { bodyParser: false } };
 
 function applyCORS(req, res) {
@@ -26,6 +29,7 @@ function bufferFromDataURL(u) {
 }
 
 async function fetchUpstream(u) {
+  // data: direkt
   if (/^data:/i.test(u)) {
     const buf = bufferFromDataURL(u);
     if (!buf) throw new Error("bad data: url");
@@ -33,7 +37,7 @@ async function fetchUpstream(u) {
   }
 
   const url = new URL(u);
-  const ua  = "pfpx-preview-proxy/1.3 (+https://pfotenpix.de)";
+  const ua  = "pfpx-preview-proxy/1.5 (+https://pfotenpix.de)";
   const baseHeaders = {
     "user-agent": ua,
     "accept": "image/*,*/*;q=0.8",
@@ -53,6 +57,50 @@ async function fetchUpstream(u) {
   return Buffer.from(await r.arrayBuffer());
 }
 
+// ---- Schrift einbetten ------------------------------------------------------
+
+function tryRead(p) {
+  try { return fs.readFileSync(p); } catch { return null; }
+}
+
+function loadFontFromPublic() {
+  // Kandidaten (nimm einfach eine davon in dein Repo)
+  const candidates = [
+    "public/fonts/Inter-SemiBold.woff2",
+    "public/fonts/Inter-Regular.woff2",
+    "public/fonts/Inter-SemiBold.woff",
+    "public/fonts/Inter-Regular.woff",
+    "public/fonts/Roboto-Regular.woff2",
+    "public/fonts/Roboto-Regular.woff",
+    "public/fonts/DejaVuSans.woff",
+    "public/fonts/DejaVuSans.ttf",
+    "public/Roboto-Regular.woff",
+    "public/DejaVuSans.woff",
+    "public/DejaVuSans.ttf",
+  ];
+
+  for (const rel of candidates) {
+    const abs = path.join(process.cwd(), rel);
+    const buf = tryRead(abs);
+    if (buf) {
+      const ext = path.extname(abs).toLowerCase();
+      const mime =
+        ext === ".woff2" ? "font/woff2" :
+        ext === ".woff"  ? "font/woff"  :
+        ext === ".otf"   ? "font/otf"   :
+                           "font/ttf";
+      const fmt =
+        ext === ".woff2" ? "woff2" :
+        ext === ".woff"  ? "woff"  :
+        ext === ".otf"   ? "opentype" : "truetype";
+      return { b64: buf.toString("base64"), mime, fmt };
+    }
+  }
+  return null;
+}
+
+// -----------------------------------------------------------------------------
+
 export default async function handler(req, res) {
   applyCORS(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -62,49 +110,65 @@ export default async function handler(req, res) {
     const u = req.query.u ? String(req.query.u) : "";
     if (!u) return res.status(400).json({ error: "missing ?u=" });
 
-    const width   = Math.min(parseInt(req.query.w || "1200", 10) || 1200, 3000);
-    const wmTxt   = esc(req.query.wm || "PFOTENPIX • PREVIEW");
-    const opacity = Math.min(Math.max(parseFloat(req.query.op || "0.36"), 0.05), 0.8);
-    const fontSize= Math.min(Math.max(parseInt(req.query.fs || "48", 10) || 48, 16), 160);
-    const tileW   = Math.min(Math.max(parseInt(req.query.tw || "360", 10) || 360, 120), 800);
-    const tileH   = Math.min(Math.max(parseInt(req.query.th || "280", 10) || 280, 100), 800);
-    const angle   = parseFloat(req.query.ang || "-30");
-    const fmt     = String((req.query.fmt || "jpeg")).toLowerCase(); // jpeg/webp/png
+    const width    = Math.min(parseInt(req.query.w || "1200", 10) || 1200, 3000);
+    // ASCII-Default (vermeidet Sonderzeichenthema)
+    const wmTxt    = esc(req.query.wm || "PFOTENPIX - PREVIEW");
+    const opacity  = Math.min(Math.max(parseFloat(req.query.op || "0.36"), 0.05), 0.8);
+    const fontSize = Math.min(Math.max(parseInt(req.query.fs || "48", 10) || 48, 16), 160);
+    const tileW    = Math.min(Math.max(parseInt(req.query.tw || "360", 10) || 360, 120), 800);
+    const tileH    = Math.min(Math.max(parseInt(req.query.th || "280", 10) || 280, 100), 800);
+    const angle    = parseFloat(req.query.ang || "-30");
+    const fmt      = String((req.query.fmt || "jpeg")).toLowerCase(); // jpeg/webp/png
 
-    // Quelle besorgen (http/https ODER data:)
+    // 1) Bild auf Zielbreite rendern
     const srcBuf = await fetchUpstream(u);
-
-    // 1) erst verkleinern
     const resizedBuf = await sharp(srcBuf)
       .resize({ width, fit: "inside", withoutEnlargement: true })
       .toBuffer();
 
-    // 2) echte Endmaße ermitteln
+    // 2) Endmaße
     const meta = await sharp(resizedBuf).metadata();
     const w = meta.width  || width;
     const h = meta.height || Math.round((w * 3) / 4);
 
-    // 3) Overlay exakt in Endgröße – Font-Stack robuster gemacht
+    // 3) Font laden & in SVG einbetten
+    const font = loadFontFromPublic(); // { b64, mime, fmt } | null
+    const fontFace = font
+      ? `@font-face{font-family:'pfpxwm';src:url(data:${font.mime};base64,${font.b64}) format('${font.fmt}');font-weight:400;font-style:normal;font-display:block;}`
+      : "";
+
+    const family = font ? "pfpxwm" : "DejaVu Sans, Liberation Sans, Arial, Helvetica, sans-serif";
+
+    // 4) SVG-Overlay erzeugen
     const svg = (W,H)=>`
       <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">
         <defs>
+          <style>
+            ${fontFace}
+            text{
+              font-family:${family};
+              font-weight:700;
+              text-rendering:optimizeLegibility;
+              -webkit-font-smoothing:antialiased;
+            }
+          </style>
           <pattern id="wm" width="${tileW}" height="${tileH}" patternUnits="userSpaceOnUse"
                    patternTransform="rotate(${angle})">
             <text x="12" y="${Math.round(fontSize)}"
               fill="black" fill-opacity="${opacity}"
-              stroke="white" stroke-opacity="${Math.min(opacity*0.7,0.5)}" stroke-width="2"
-              font-family="DejaVu Sans, Liberation Sans, Arial, Helvetica, sans-serif"
-              font-weight="700" font-size="${fontSize}">${wmTxt}</text>
+              stroke="white" stroke-opacity="${Math.min(opacity*0.5,0.4)}" stroke-width="1"
+              font-size="${fontSize}">${wmTxt}</text>
           </pattern>
         </defs>
         <rect width="100%" height="100%" fill="url(#wm)"/>
       </svg>`;
+
     const overlay = Buffer.from(svg(w, h));
 
-    // 4) Composite
+    // 5) Compositing
     let img = sharp(resizedBuf).composite([{ input: overlay, top: 0, left: 0 }]);
 
-    // Ausgabeformat
+    // 6) Ausgabeformat
     if (fmt === "webp") {
       img = img.webp({ quality: 90 });
       res.setHeader("Content-Type", "image/webp");
@@ -124,6 +188,9 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("preview-proxy error:", err);
     res.setHeader("Content-Type", "application/json; charset=utf-8");
-    return res.status(502).send(JSON.stringify({ error: "proxy failure", details: String(err.message || err).slice(0, 400) }));
+    return res.status(502).send(JSON.stringify({
+      error: "proxy failure",
+      details: String(err.message || err).slice(0, 400)
+    }));
   }
 }
