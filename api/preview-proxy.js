@@ -1,4 +1,4 @@
-// /api/preview-proxy.js – Wasserzeichen-Proxy (offene CORS, sichtbares WM, wählbares Format)
+// /api/preview-proxy.js – Wasserzeichen-Proxy (offene CORS, sichtbares WM, wählbares Format, unterstützt data: URLs)
 import sharp from "sharp";
 export const config = { api: { bodyParser: false } };
 
@@ -15,6 +15,17 @@ function esc(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+// data:image/png;base64,.... → Buffer
+function bufferFromDataUrl(dataUrl) {
+  const m = /^data:([^;]+)(;charset=[^;]+)?;base64,([\s\S]+)$/i.exec(dataUrl);
+  if (!m) return null;
+  try {
+    return Buffer.from(m[3], "base64");
+  } catch {
+    return null;
+  }
 }
 
 export default async function handler(req, res) {
@@ -37,12 +48,19 @@ export default async function handler(req, res) {
     const angle    = parseFloat(req.query.ang || "-30");
     const fmt      = String((req.query.fmt || "jpeg")).toLowerCase(); // jpeg/webp/png
 
-    const upstream = await fetch(u);
-    if (!upstream.ok) {
-      const txt = await upstream.text().catch(()=> "");
-      return res.status(502).json({ error:`upstream ${upstream.status}`, details: txt?.slice(0,500) });
+    // Upstream lesen: unterstützt http(s) und data: URLs
+    let buf = null;
+    if (u.startsWith("data:")) {
+      buf = bufferFromDataUrl(u);
+      if (!buf) return res.status(400).json({ error: "invalid data URL" });
+    } else {
+      const upstream = await fetch(u);
+      if (!upstream.ok) {
+        const txt = await upstream.text().catch(()=> "");
+        return res.status(502).json({ error:`upstream ${upstream.status}`, details: txt?.slice(0,500) });
+      }
+      buf = Buffer.from(await upstream.arrayBuffer());
     }
-    const buf = Buffer.from(await upstream.arrayBuffer());
 
     let img = sharp(buf).resize({ width, fit:"inside", withoutEnlargement:true });
 
