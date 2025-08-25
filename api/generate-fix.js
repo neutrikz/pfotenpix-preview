@@ -127,7 +127,7 @@ function buildPrompts(userText) {
     "This is the same real pet; preserve the exact species and identity.",
     "Keep anatomy and facial proportions unchanged; no cartoonification.",
     "Ultra-detailed, artifact-free; suitable for fine-art printing.",
-    "Composition: subject centered with generous negative space; subject occupies about 70–85% of the frame; extend and complete the surrounding background seamlessly into the margins."
+    "Composition: subject centered with generous negative space; subject occupies about 70% of the frame; extend and complete the surrounding background seamlessly into the margins."
   ].join(" ");
 
   const nat = [
@@ -199,7 +199,7 @@ export default async function handler(req, res) {
 
     // Standardwerte
     const SIZE = 1024;
-    const COMPOSE_MARGIN_DEFAULT = 0.20; // 12% je Seite ≈ Motiv 76% – passe hier an (z.B. 0.10) - manuell geändert auf 20% je Seite
+    const COMPOSE_MARGIN_DEFAULT = 0.12; // 12% je Seite ≈ Motiv 76% – passe hier an (z.B. 0.10)
 
     if (ctype.startsWith("multipart/form-data")) {
       const m = /boundary=([^;]+)/i.exec(ctype);
