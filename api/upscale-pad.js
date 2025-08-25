@@ -1,221 +1,159 @@
-// /api/upscale-pad.js
-// 4× Upscale (Clipdrop → Sharp Lanczos3), optionaler Passepartout-Rand (matte)
-// Hintergrund: auto | dominant | blur | #hex, optional ratio-Padding + margin, 300 DPI
+// /api/upscale-pad.js – Upscale + Pad + „Bildfarb-Rand“ (blurred edge)
+// POST JSON: { url: "https://...", dataurl?: "data:image/..." }
+// Query: ?ratio=3:4|21x30|1:1  & matte=0.12  & bg=blur|color-#ffffff  & blur=30  & fmt=png|jpeg  & max=4096
+// Antwort: Bild (image/png oder image/jpeg)
+
 import sharp from "sharp";
-import { FormData, File } from "formdata-node";
 
 export const config = { api: { bodyParser: false } };
 
-// -------------------- Util --------------------
-function cors(res){
+function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
-async function readBody(req){
-  const chunks=[]; for await (const ch of req) chunks.push(ch);
-  return Buffer.concat(ch).toString("utf8");
+
+function clamp(n, lo, hi) { return Math.min(Math.max(Number(n), lo), hi); }
+
+function parseRatio(raw) {
+  if (!raw) return 1; // 1:1
+  const s = String(raw).trim()
+    .replace(/[×x/]/gi, ":")   // 21×30, 21x30, 21/30 => 21:30
+    .replace(/\s*cm\b/gi, "")  // " cm" entfernen
+    .replace(/[^\d:.\-]/g, "");
+  const [a, b] = s.split(":").map(Number);
+  if (!a || !b) return 1;
+  return Math.max(0.05, Math.min(20, a / b));
 }
-function parseRatio(s){
-  const m=/^(\d+)\s*[:/]\s*(\d+)$/.exec(String(s||""));
-  if(!m) return null;
-  return [parseInt(m[1],10), parseInt(m[2],10)];
+
+function isHttp(u) { return /^https?:\/\//i.test(u || ""); }
+function isData(u) { return /^data:image\//i.test(u || ""); }
+
+async function readRawBody(req) {
+  const chunks = [];
+  for await (const ch of req) chunks.push(ch);
+  return Buffer.concat(chunks);
 }
-function hexToRGB(hex){
-  const h=(hex||"ffffff").replace(/[^0-9a-f]/gi,"").padEnd(6,"f").slice(0,6);
-  return { r:parseInt(h.slice(0,2),16), g:parseInt(h.slice(2,4),16), b:parseInt(h.slice(4,6),16), alpha:1 };
+
+function bufFromDataURL(u) {
+  const m = /^data:image\/[a-z0-9+.-]+;base64,([A-Za-z0-9+/=]+)$/i.exec(u || "");
+  return m ? Buffer.from(m[1], "base64") : null;
 }
-async function fetchBuffer(url){
-  if (/^data:/i.test(url)) {
-    const m = /^data:.*?;base64,(.+)$/i.exec(url);
-    if(!m) throw new Error("Bad data URL");
-    return Buffer.from(m[1], "base64");
+
+// Hotlink-sicher laden (ähnlich wie preview-proxy)
+async function fetchUpstream(u) {
+  if (isData(u)) {
+    const b = bufFromDataURL(u);
+    if (!b) throw new Error("Bad data URL");
+    return b;
   }
-  const r = await fetch(url, { redirect:"follow", cache:"no-store" });
-  if(!r.ok) throw new Error("Fetch failed "+r.status);
+  if (!isHttp(u)) throw new Error("URL must be http(s) or data:");
+  const url = new URL(u);
+  const headers = {
+    "user-agent": "pfpx-upscale/1.0 (+https://pfotenpix.de)",
+    "accept": "image/*,*/*;q=0.8",
+    "referer": url.origin + "/",
+    "accept-language": "de,en;q=0.9",
+  };
+  let r = await fetch(u, { headers, redirect: "follow", cache: "no-store" });
+  if (!r.ok) {
+    // zweiter Versuch mit fixer Referer-Domain
+    r = await fetch(u, { headers: { ...headers, referer: "https://pfotenpix.de/" }, redirect: "follow", cache: "no-store" });
+  }
+  if (!r.ok) {
+    const txt = await r.text().catch(() => "");
+    throw new Error(`upstream ${r.status} ${r.statusText} :: ${txt.slice(0, 180)}`);
+  }
   return Buffer.from(await r.arrayBuffer());
 }
 
-// -------------------- Farben / Hintergründe --------------------
-async function edgeColor(buf) {
-  // mittelt Randpixel (2 px) nach 24×24 Downscale
-  const SM = 24;
-  const img = sharp(buf).resize(SM, SM, { fit: "inside" }).raw();
-  const { data, info } = await img.toBuffer({ resolveWithObject: true });
-  const w = info.width, h = info.height, ch = info.channels;
-  let r=0,g=0,b=0,c=0;
-  const isEdge = (x,y) => (x<=1 || y<=1 || x>=w-2 || y>=h-2);
-  for (let y=0;y<h;y++){
-    for (let x=0;x<w;x++){
-      if (!isEdge(x,y)) continue;
-      const i = (y*w + x)*ch;
-      r += data[i+0]||0; g += data[i+1]||0; b += data[i+2]||0; c++;
-    }
-  }
-  if (!c) return { r:255, g:255, b:255, alpha:1 };
-  return { r:Math.round(r/c), g:Math.round(g/c), b:Math.round(b/c), alpha:1 };
-}
-async function dominantColor(buf) {
-  // 32×32 Downscale, 4-Bit Quantisierung, Histogramm
-  const SM = 32;
-  const img = sharp(buf).resize(SM, SM, { fit: "inside" }).raw();
-  const { data, info } = await img.toBuffer({ resolveWithObject: true });
-  const w = info.width, h = info.height, ch = info.channels;
-  const hist = new Map();
-  for (let i=0;i<w*h;i++){
-    const r=data[i*ch+0]||0, g=data[i*ch+1]||0, b=data[i*ch+2]||0;
-    const rq=r>>4, gq=g>>4, bq=b>>4;
-    const key=(rq<<8)|(gq<<4)|bq;
-    const e=hist.get(key)||{n:0,R:0,G:0,B:0};
-    e.n++; e.R+=r; e.G+=g; e.B+=b; hist.set(key,e);
-  }
-  let best=null;
-  for (const e of hist.values()) if (!best || e.n>best.n) best=e;
-  if (!best) return { r:255, g:255, b:255, alpha:1 };
-  return { r:Math.round(best.R/best.n), g:Math.round(best.G/best.n), b:Math.round(best.B/best.n), alpha:1 };
-}
-
-// -------------------- Ops: Upscale, Matte, Ratio --------------------
-async function clipdropUpscale(buf){
-  const key = process.env.CLIPDROP_API_KEY || process.env.CLIPDROP_KEY;
-  if(!key) return null;
-  try{
-    const fd = new FormData();
-    fd.set("image_file", new File([buf], "in.png", { type:"image/png" }));
-    const r = await fetch("https://clipdrop-api.co/super-resolution/v1", {
-      method:"POST", headers:{ "x-api-key": key }, body: fd
-    });
-    if(!r.ok) throw new Error("Clipdrop HTTP "+r.status);
-    return Buffer.from(await r.arrayBuffer());
-  }catch(e){ return null; }
-}
-
-async function lanczosUpscale4x(buf){
-  const meta = await sharp(buf).metadata();
-  const w = Math.max(1, meta.width || 1024);
-  const h = Math.max(1, meta.height|| 1024);
-  return await sharp(buf)
-    .resize({ width:w*4, height:h*4, kernel:"lanczos3" })
-    .png({ compressionLevel:9 })
-    .toBuffer();
-}
-
-async function applyMatte(buf, mattePct, bgMode, blurSigma = 30) {
-  const pct = Math.max(0, Math.min(0.4, Number(mattePct)||0)); // 0..40%
-  if (pct <= 0) return buf;
-
-  const meta = await sharp(buf).metadata();
-  const W = meta.width || 1024, H = meta.height || 1024;
-
-  // inneres Bild (contain)
-  const innerW = Math.max(1, Math.round(W*(1-2*pct)));
-  const innerH = Math.max(1, Math.round(H*(1-2*pct)));
-  const inner  = await sharp(buf).resize({ width: innerW, height: innerH, fit: "inside" }).toBuffer();
-  const mode = String(bgMode||'auto').toLowerCase();
-
-  if (mode === 'blur') {
-    const sigma = Math.max(0.3, Math.min(100, Number(blurSigma)||30));
-    const base = await sharp(buf)
-      .resize({ width: W, height: H, fit: "cover" })
-      .blur(sigma)
-      .toBuffer();
-    return await sharp(base)
-      .composite([{ input: inner, left: Math.round((W-innerW)/2), top: Math.round((H-innerH)/2) }])
-      .withMetadata({ density: 300 })
-      .png({ compressionLevel: 9 })
-      .toBuffer();
-  }
-
-  // einfarbig (auto/dominant/hex)
-  let bg;
-  if (mode === 'dominant') bg = await dominantColor(buf);
-  else if (mode === 'auto') bg = await edgeColor(buf);
-  else bg = hexToRGB(bgMode);
-
-  const canvas = sharp({ create: { width: W, height: H, channels: 3, background: bg } });
-  return await canvas
-    .composite([{ input: inner, left: Math.round((W-innerW)/2), top: Math.round((H-innerH)/2) }])
-    .withMetadata({ density: 300 })
-    .png({ compressionLevel: 9 })
-    .toBuffer();
-}
-
-async function padToRatio(buf, ratio, margin, bgColorObj, fmt){
-  if(!ratio) return buf;
-  const meta = await sharp(buf).metadata();
-  const iw = meta.width || 1, ih = meta.height || 1;
-  const [rw,rh] = ratio;
-  const targetR = rw/rh, imageR = iw/ih;
-  let cw, ch;
-  if (imageR > targetR) { cw = iw; ch = Math.round(iw/targetR); }
-  else { ch = ih; cw = Math.round(ih*targetR); }
-
-  const innerW = Math.round(cw*(1 - margin*2));
-  const innerH = Math.round(ch*(1 - margin*2));
-  const inner  = await sharp(buf).resize({ width: innerW, height: innerH, fit:"inside" }).toBuffer();
-
-  const canvas = sharp({ create: { width: cw, height: ch, channels: 3, background: bgColorObj } });
-  let out = await canvas
-    .composite([{ input: inner, left: Math.round((cw-innerW)/2), top: Math.round((ch-innerH)/2) }])
-    .withMetadata({ density: 300 });
-
-  if (fmt === "jpeg") return await out.jpeg({ quality:95 }).toBuffer();
-  return await out.png({ compressionLevel:9 }).toBuffer();
-}
-
-// -------------------- Handler --------------------
-export default async function handler(req, res){
+export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST") return res.status(405).end();
+  if (req.method !== "POST")   return res.status(405).json({ error: "Method not allowed" });
 
-  try{
-    const urlObj = new URL(req.url, "http://x");
-    const matte  = urlObj.searchParams.get("matte");            // e.g. 0.12
-    const bgMode = (urlObj.searchParams.get("bg")||"auto");     // auto|dominant|blur|#hex
-    const blur   = urlObj.searchParams.get("blur") || "30";     // for bg=blur
-    const ratio  = parseRatio(urlObj.searchParams.get("ratio")); // e.g. 3:4
-    const margin = Math.min(Math.max(parseFloat(urlObj.searchParams.get("margin")||"0.02"), 0), 0.2);
-    const fmt    = (urlObj.searchParams.get("fmt")||"png").toLowerCase()==="jpeg" ? "jpeg" : "png";
+  try {
+    // ---- Query-Parameter lesen ----
+    const ratio     = parseRatio(req.query.ratio || "1:1");
+    const matte     = clamp(req.query.matte ?? 0.12, 0, 0.49);    // innerer Rand (pro Seite)
+    const bgParam   = String(req.query.bg || "blur").toLowerCase(); // "blur" oder "color-#rrggbb"
+    const blurSigma = clamp(req.query.blur ?? 30, 0, 200);
+    const fmt       = (String(req.query.fmt || "png").toLowerCase() === "jpeg") ? "jpeg" : "png";
+    const maxEdge   = clamp(req.query.max ?? 4096, 512, 8192);
 
-    // Body lesen
-    const bodyTxt = await readBody(req);
-    const body = JSON.parse(bodyTxt||"{}");
-    const src = body.url || body.data || body.image || "";
-    if (!src) return res.status(400).json({ error:"missing url/data" });
-
-    // (1) Quelle holen
-    const base = await fetchBuffer(src);
-
-    // (2) Upscale 4×
-    let up = await clipdropUpscale(base);
-    if (!up) up = await lanczosUpscale4x(base);
-
-    // (3) Matte anwenden
-    up = await applyMatte(up, matte, bgMode, blur);
-
-    // (4) Ratio-Padding (optional) – Hintergrundfarbe für Canvas bestimmen
-    let canvasBg = null;
-    if (ratio) {
-      if (bgMode === 'blur') {
-        // für äußeres Canvas harmonisch: Kantenfarbe
-        canvasBg = await edgeColor(up);
-      } else if (bgMode === 'dominant') {
-        canvasBg = await dominantColor(up);
-      } else if (bgMode === 'auto') {
-        canvasBg = await edgeColor(up);
+    // ---- Body lesen ----
+    const ct = String(req.headers["content-type"] || "").toLowerCase();
+    let srcBuf = null;
+    if (ct.includes("application/json")) {
+      const json = JSON.parse((await readRawBody(req)).toString("utf8") || "{}");
+      if (json.dataurl) {
+        srcBuf = bufFromDataURL(json.dataurl);
+        if (!srcBuf) throw new Error("Invalid dataurl");
+      } else if (json.url) {
+        srcBuf = await fetchUpstream(json.url);
       } else {
-        canvasBg = hexToRGB(bgMode);
+        throw new Error("Body must contain {url} or {dataurl}");
       }
+    } else {
+      throw new Error("Content-Type must be application/json");
     }
 
-    const out = await padToRatio(up, ratio, margin, canvasBg || hexToRGB('ffffff'), fmt);
+    // ---- Ausgangsbild lesen ----
+    const src = sharp(srcBuf, { failOn:"none" });
+    const meta = await src.metadata();
+    if (!(meta.width && meta.height)) throw new Error("Cannot read image");
 
-    res.setHeader("Content-Type", fmt==="jpeg" ? "image/jpeg" : "image/png");
-    res.setHeader("Cache-Control","no-store");
-    return res.status(200).send(out);
-  }catch(e){
-    res.setHeader("Content-Type","application/json; charset=utf-8");
-    return res.status(500).end(JSON.stringify({ error:"upscale-pad failed", details:String(e).slice(0,300) }));
+    // ---- Zielgröße aus Seitenverhältnis + maxEdge bestimmen ----
+    const targetW = ratio >= 1 ? maxEdge : Math.round(maxEdge * ratio);
+    const targetH = ratio >= 1 ? Math.round(maxEdge / ratio) : maxEdge;
+
+    // ---- Hintergrund: geblurrte Kanten ----
+    const bgCover = await sharp(srcBuf)
+      .resize({ width: targetW, height: targetH, fit: "cover" })
+      .blur(blurSigma || 0.3) // minimaler Blur, sonst Banding
+      .toBuffer();
+
+    // Alternative: feste Farbe color-#rrggbb
+    let base = sharp(bgCover);
+    if (bgParam.startsWith("color-")) {
+      const hex = bgParam.slice(6);
+      const col = /^#?[0-9a-f]{6}$/i.test(hex) ? (hex.startsWith("#") ? hex : "#"+hex) : "#000000";
+      const solid = await sharp({
+        create: { width: targetW, height: targetH, channels: 3, background: col }
+      }).png().toBuffer();
+      base = sharp(solid);
+    }
+
+    // ---- Contentfläche (Innenmaß) berechnen ----
+    const innerW = Math.max(1, Math.floor(targetW * (1 - matte * 2)));
+    const innerH = Math.max(1, Math.floor(targetH * (1 - matte * 2)));
+
+    // Bild in die Contentfläche einpassen (Seitenverhältnis des Originals bleibt)
+    const contentBuf = await sharp(srcBuf)
+      .resize({ width: innerW, height: innerH, fit: "inside", kernel: sharp.kernel.lanczos3, withoutEnlargement: false })
+      .toBuffer();
+
+    const cMeta = await sharp(contentBuf).metadata();
+    const left = Math.floor((targetW - (cMeta.width  || innerW)) / 2);
+    const top  = Math.floor((targetH - (cMeta.height || innerH)) / 2);
+
+    // ---- Compositing ----
+    let out = base.composite([{ input: contentBuf, left, top }]);
+    if (fmt === "jpeg") {
+      res.setHeader("Content-Type", "image/jpeg");
+      out = out.jpeg({ quality: 95, chromaSubsampling: "4:4:4" });
+    } else {
+      res.setHeader("Content-Type", "image/png");
+      out = out.png({ compressionLevel: 9 });
+    }
+
+    const buf = await out.toBuffer();
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).send(buf);
+
+  } catch (err) {
+    console.error("upscale-pad error:", err);
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(500).send(JSON.stringify({ error: "upscale failure", detail: String(err?.message || err).slice(0, 300) }));
   }
 }
