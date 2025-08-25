@@ -199,7 +199,7 @@ export default async function handler(req, res) {
 
     // Standardwerte
     const SIZE = 1024;
-    const COMPOSE_MARGIN_DEFAULT = 0.12; // 12% je Seite ≈ Motiv 76% – passe hier an (z.B. 0.10)
+    const COMPOSE_MARGIN_DEFAULT = 0.20; // 12% je Seite ≈ Motiv 76% – passe hier an (z.B. 0.10) - manuell geändert auf 20% je Seite
 
     if (ctype.startsWith("multipart/form-data")) {
       const m = /boundary=([^;]+)/i.exec(ctype);
