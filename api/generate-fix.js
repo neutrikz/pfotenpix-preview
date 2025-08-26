@@ -1,5 +1,5 @@
 // /api/generate-fix.js – Outpainting + Single-Style + Diagnose
-// Version: PFPX 2025-08c
+// Version: PFPX 2025-08c (DIAG+)
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
@@ -11,7 +11,9 @@ function applyCORS(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "*");
-  res.setHeader("Access-Control-Expose-Headers", "x-request-id,retry-after");
+  res.setHeader("Access-Control-Expose-Headers", "x-request-id,retry-after,x-pfpx-version");
+  // Diagnose: build/version zur Laufzeit mitschicken
+  res.setHeader("x-pfpx-version", "PFPX-2025-08c");
 }
 
 // ===== Helpers =====
@@ -188,8 +190,7 @@ const ALLOWED = ["schwarzweiß","neon","steampunk","cinematic","pastell","vintag
 function normalizeStyle(s) {
   if (!s || typeof s !== "string") return null;
   let v = s.trim().toLowerCase();
-  // Synonyme / Schreibvarianten
-  if (v === "schwarz-weiss" || v === "schwarzweiss" || v === "schwarz weiss" || v === "schwarz-weiß" || v === "bw" || v === "b/w" || v === "blackwhite" || v === "black-white") v = "schwarzweiß";
+  if (v === "schwarz-weiss" || v === "schwarzweiss" || v === "schwarz weiss" || v === "schwarz-weiß") v = "schwarzweiß";
   if (v === "high-key" || v === "high key") v = "highkey";
   if (v === "low-key"  || v === "low key")  v = "lowkey";
   return v;
@@ -201,16 +202,21 @@ export default async function handler(req, res) {
   if (req.method !== "POST")   return res.status(405).end();
 
   const DIAG = {}; // sammelt Diagnose-Daten
+  DIAG.version = "PFPX-2025-08c";
+  DIAG.allowed = ALLOWED;
+  DIAG.route = req.url || "";
 
   try {
     const ctype = (req.headers["content-type"] || "").toLowerCase();
+    const hdrStyle = (req.headers["x-pfpx-style"] || "").toString();
+    DIAG.hdr_style = hdrStyle || null;
+
     let sourceBuffer = null;
     let composeMargin = null;
 
-    // Roh-Stil-Eingaben (für Diagnose)
+    // Roh-Stil-Eingaben
     let rawStylesField = null;      // exakt erhaltene Zeichenkette (z. B. '["vintage"]' oder 'vintage')
     let requestedStyles = null;     // Array (evtl. vor Normalisierung)
-    const styleCandidates = [];     // zusätzliche Felder/Headers (style, selected_style, style_key, X-PFPX-Style)
 
     // Zielgröße
     const SIZE = 1024;
@@ -226,13 +232,9 @@ export default async function handler(req, res) {
       if (fields["styles"] != null) {
         rawStylesField = fields["styles"];
         try { const t = JSON.parse(fields["styles"]); if (Array.isArray(t)) requestedStyles = t; } catch {}
-      }
-      // zusätzliche, häufig verwendete Einzelfelder zulassen
-      for (const k of ["style","selected_style","style_key"]) {
-        if (fields[k] != null && String(fields[k]).trim() !== "") {
-          styleCandidates.push(String(fields[k]));
-          if (!rawStylesField) rawStylesField = String(fields[k]);
-        }
+      } else if (fields["style"] != null) {
+        rawStylesField = fields["style"];
+        requestedStyles = [ String(fields["style"]) ];
       }
 
       if (fields["compose_margin"] != null) {
@@ -246,12 +248,7 @@ export default async function handler(req, res) {
       sourceBuffer = Buffer.from(b64, "base64");
 
       if (Array.isArray(body.styles)) { rawStylesField = JSON.stringify(body.styles); requestedStyles = body.styles; }
-      for (const k of ["style","selected_style","style_key"]) {
-        if (typeof body[k] === "string" && body[k].trim() !== "") {
-          styleCandidates.push(body[k]);
-          if (!rawStylesField) rawStylesField = body[k];
-        }
-      }
+      else if (typeof body.style === "string") { rawStylesField = body.style; requestedStyles = [ body.style ]; }
 
       if (body.compose_margin != null) {
         const v = parseFloat(body.compose_margin);
@@ -261,35 +258,32 @@ export default async function handler(req, res) {
       return res.status(415).json({ error: "Unsupported Content-Type" });
     }
 
-    // Header-Style (z. B. von WP-Hotfix) zulassen
-    const headerStyle = (req.headers["x-pfpx-style"] || req.headers["x-pfpx-style".toLowerCase()] || "").toString().trim();
-    if (headerStyle) styleCandidates.push(headerStyle);
-
     // Diagnose: Rohdaten
     DIAG.request_styles_sent_raw = rawStylesField ?? null;
-    DIAG.extra_style_candidates = styleCandidates.slice();
 
-    // Array zusammenführen
-    let combined = [];
-    if (Array.isArray(requestedStyles)) combined = combined.concat(requestedStyles);
-    if (styleCandidates.length)        combined = combined.concat(styleCandidates);
+    // Header-Stil als Prio 0 vorn anstellen (falls gesetzt)
+    if (hdrStyle) {
+      if (!requestedStyles) requestedStyles = [];
+      requestedStyles.unshift(hdrStyle);
+    }
 
     // Normalisieren + validieren
-    let normalized = Array.isArray(combined) ? combined.map(normalizeStyle).filter(Boolean) : [];
-    // Duplikate raus
-    normalized = Array.from(new Set(normalized));
-    // Nur erlaubte
+    let normalized = Array.isArray(requestedStyles) ? requestedStyles.map(normalizeStyle).filter(Boolean) : [];
+    normalized = Array.from(new Set(normalized)); // Duplikate raus
+
     let filtered = normalized.filter(s => ALLOWED.includes(s));
 
-    // Diagnose
-    DIAG.request_styles_array = normalized.slice();
-    DIAG.filtered = filtered.slice();
+    // Diagnose erweitern
+    DIAG.request_styles_array = Array.isArray(requestedStyles) ? requestedStyles : [];
+    DIAG.normalized_styles   = normalized;
+    DIAG.filtered_styles     = filtered;
 
-    // Auswahl: exakt EIN Stil erzwingen
-    let chosen = filtered.length > 0 ? filtered[0] : "neon";
-    const usedFallback = filtered.length === 0;
-    DIAG.chosen_style = chosen;
-    DIAG.fallback_used = !!usedFallback;
+    let fallback_used = false;
+    if (filtered.length === 0) {
+      filtered = ["neon"];
+      fallback_used = true;
+    }
+    DIAG.fallback_used = fallback_used;
 
     // Bild vorbereiten
     const inputPng = await sharp(sourceBuffer)
@@ -306,9 +300,7 @@ export default async function handler(req, res) {
 
     const previews = {};
     const failed = [];
-
-    // nur EIN Stil verarbeiten (Single-Style)
-    for (const style of [chosen]) {
+    for (const style of filtered) {
       await sleep(150 + Math.round(Math.random()*300));
 
       const form = new FormData();
@@ -320,7 +312,7 @@ export default async function handler(req, res) {
 
       try {
         const outUrl = await fetchOpenAIWithRetry(form, style, { retries: 4, baseDelayMs: 1000 });
-        previews[style] = outUrl; // 🔑 Key = gewählter Stil
+        previews[style] = outUrl; // <-- Key entspricht immer dem gewünschten Stil
       } catch (e) {
         console.error(`❌ Stil '${style}' fehlgeschlagen:`, String(e));
         failed.push(style);
