@@ -1,4 +1,4 @@
-// /api/generate-fix.js – Edit ohne Maske, nur Prompt-Steuerung (Motiv ~30%, viel Hintergrund)
+// /api/generate-fix.js – Outpainting-Canvas (transparente Ränder) + strenger Kompositions-Prompt
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
@@ -99,20 +99,46 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
   throw lastError || new Error("OpenAI fehlgeschlagen");
 }
 
-// ===== Prompts – Motiv ~30 %, zentriert, viel negativer Raum, später gut croppbar =====
+// ===== Outpainting-Canvas: Motiv verkleinern + transparente Ränder =====
+async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
+  // marginPct = Anteil je Seite (0.00–0.49). Motivbreite = 1 - 2*marginPct
+  const m = Math.max(0, Math.min(marginPct ?? 0, 0.49));
+  const subjectSize = Math.round(targetSize * (1 - 2 * m));
+  const pad = Math.round(targetSize * m);
+
+  const subjectPng = await sharp(inputBuffer)
+    .resize(subjectSize, subjectSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .png()
+    .toBuffer();
+
+  const canvas = await sharp({
+    create: {
+      width: targetSize,
+      height: targetSize,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    }
+  })
+    .composite([{ input: subjectPng, left: pad, top: pad }])
+    .png()
+    .toBuffer();
+
+  return canvas; // Transparente Randzonen → Modell outpaintet Hintergrund
+}
+
+// ===== Prompts – streng: Motiv max. 20–25 %, viel negativer Raum =====
 function buildPrompts(userText) {
   const comp = [
-    "Composition: center the pet and leave generous negative space.",
-    "The subject should cover about 20% of the frame (small in frame), with ~80% clean background.",
-    "Ensure the whole head and silhouette are fully visible with comfortable top/bottom and side margins.",
-    "Background must be coherent and smoothly extended from the original (no hard borders, no frames).",
-    "Design the background to work in both portrait and landscape crops later; avoid elements that break when rotated.",
-    "Do not zoom in; do not tightly crop; no added borders or picture frames."
+    "Composition: subject strictly centered and fully visible.",
+    "The subject must occupy at most 20–25% of the canvas width and height; leave ≈40% empty margin on every side.",
+    "Do not zoom in; do not tightly crop; no frames or borders.",
+    "Background must be coherent and smoothly extended from the original scene (no hard seams).",
+    "Design so the image also works when cropped in portrait or landscape later."
   ].join(" ");
 
   const guardrails = [
     "This is the same real pet; preserve exact identity, anatomy and markings.",
-    "Keep proportions and facial structure unchanged; no cartoonification; artifact-free.",
+    "Keep proportions and facial structure unchanged; no cartoonification; artifact-free, print-grade quality.",
     comp
   ].join(" ");
 
@@ -147,10 +173,12 @@ export default async function handler(req, res) {
 
   try {
     const ctype = (req.headers["content-type"] || "").toLowerCase();
-    let sourceBuffer = null, userText = "", requestedStyles = null;
+    let sourceBuffer = null, userText = "", requestedStyles = null, composeMargin = null;
 
     // Zielgröße (OpenAI erlaubt 1024 zuverlässig)
     const SIZE = 1024;
+    // Default: 40% Rand je Seite → Motivbreite ~20%
+    const COMPOSE_MARGIN_DEFAULT = 0.40;
 
     if (ctype.startsWith("multipart/form-data")) {
       const m = /boundary=([^;]+)/i.exec(ctype);
@@ -160,6 +188,10 @@ export default async function handler(req, res) {
       sourceBuffer = f.buffer;
       userText = (fields["custom_text"] || fields["text"] || "").toString();
       if (fields["styles"]) { try { const s = JSON.parse(fields["styles"]); if (Array.isArray(s)) requestedStyles = s; } catch {} }
+      if (fields["compose_margin"] != null) {
+        const v = parseFloat(fields["compose_margin"]);
+        if (Number.isFinite(v)) composeMargin = v;
+      }
     } else if (ctype.includes("application/json")) {
       const body = JSON.parse((await readRawBody(req)).toString("utf8") || "{}");
       const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/,"");
@@ -167,6 +199,10 @@ export default async function handler(req, res) {
       sourceBuffer = Buffer.from(b64, "base64");
       userText = body.userText || "";
       if (Array.isArray(body.styles)) requestedStyles = body.styles;
+      if (body.compose_margin != null) {
+        const v = parseFloat(body.compose_margin);
+        if (Number.isFinite(v)) composeMargin = v;
+      }
     } else {
       return res.status(415).json({ error: "Unsupported Content-Type" });
     }
@@ -177,8 +213,9 @@ export default async function handler(req, res) {
       .png()
       .toBuffer();
 
-    // Ohne Maske/Outpainting: wir steuern alles über den Prompt
-    const imageForEdit = inputPng;
+    // Outpainting-Canvas mit transparenten Randzonen (erzwingt viel Hintergrund)
+    const margin = composeMargin == null ? COMPOSE_MARGIN_DEFAULT : composeMargin;
+    const imageForEdit = await makeOutpaintCanvas(inputPng, SIZE, margin);
 
     const prompts = buildPrompts(userText);
 
@@ -198,8 +235,8 @@ export default async function handler(req, res) {
 
       const form = new FormData();
       form.set("model", "gpt-image-1");
+      // keine Maske senden; die transparenten Flächen dienen effektiv als Outpaint-Bereich
       form.set("image", new File([imageForEdit], "image.png", { type: "image/png" }));
-      // keine Maske → das Modell darf das ganze Bild bearbeiten
       form.set("prompt", prompts[style] || "");
       form.set("n", "1");
       form.set("size", "1024x1024");
@@ -214,9 +251,9 @@ export default async function handler(req, res) {
     }
 
     if (Object.keys(previews).length === 0) {
-      return res.status(502).json({ success: false, error: "Alle Stile fehlgeschlagen.", failed });
+      return res.status(502).json({ success: false, error: "Alle Stile fehlgeschlagen.", failed, compose_margin: margin });
     }
-    return res.status(200).json({ success: true, previews, failed });
+    return res.status(200).json({ success: true, previews, failed, compose_margin: margin });
   } catch (err) {
     console.error("generate-fix.js error:", err);
     return res.status(500).json({ error: "Interner Serverfehler" });
