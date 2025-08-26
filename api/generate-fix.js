@@ -1,17 +1,29 @@
-// /api/generate-fix.js – Outpainting + Single-Style + Diagnose (forced style supported)
-// Version: PFPX 2025-08c
+// /api/generate-fix.js – Outpainting + Single-Style + Diagnose-Header (Patch A)
+// Version: PFPX-2025-08c
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 export const config = { api: { bodyParser: false } };
+const VERSION = "PFPX-2025-08c";
 
 // ===== CORS =====
 function applyCORS(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "*");
-  res.setHeader("Access-Control-Expose-Headers", "x-request-id,retry-after");
+  res.setHeader("Access-Control-Expose-Headers", "x-request-id,retry-after,x-pfpx-version,x-pfpx-style-header,x-pfpx-style-query,x-pfpx-style-final,x-pfpx-styles-array");
+}
+
+// ===== Diagnose-Header Setter (NEU) =====
+function setDiagHeaders(res, { styleHeader, styleQuery, normalized, finalStyle, version }) {
+  try {
+    res.setHeader("x-pfpx-version", String(version || VERSION));
+    res.setHeader("x-pfpx-style-header", String(styleHeader || ""));
+    res.setHeader("x-pfpx-style-query", String(styleQuery || ""));
+    res.setHeader("x-pfpx-style-final", String(finalStyle || ""));
+    res.setHeader("x-pfpx-styles-array", JSON.stringify(normalized || []));
+  } catch (_) {}
 }
 
 // ===== Helpers =====
@@ -100,6 +112,32 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
   throw lastError || new Error("OpenAI fehlgeschlagen");
 }
 
+// ===== Outpainting-Canvas =====
+async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
+  const m = Math.max(0, Math.min(marginPct ?? 0, 0.49));
+  const subjectSize = Math.round(targetSize * (1 - 2 * m));
+  const pad = Math.round(targetSize * m);
+
+  const subjectPng = await sharp(inputBuffer)
+    .resize(subjectSize, subjectSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .png()
+    .toBuffer();
+
+  const canvas = await sharp({
+    create: {
+      width: targetSize,
+      height: targetSize,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    }
+  })
+    .composite([{ input: subjectPng, left: pad, top: pad }])
+    .png()
+    .toBuffer();
+
+  return canvas;
+}
+
 // ===== Prompts =====
 function buildPrompts() {
   const comp =
@@ -162,6 +200,7 @@ const ALLOWED = ["schwarzweiß","neon","steampunk","cinematic","pastell","vintag
 function normalizeStyle(s) {
   if (!s || typeof s !== "string") return null;
   let v = s.trim().toLowerCase();
+  // Synonyme / Schreibvarianten
   if (v === "schwarz-weiss" || v === "schwarzweiss" || v === "schwarz weiss" || v === "schwarz-weiß") v = "schwarzweiß";
   if (v === "high-key" || v === "high key") v = "highkey";
   if (v === "low-key"  || v === "low key")  v = "lowkey";
@@ -173,40 +212,32 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST")   return res.status(405).end();
 
-  const DIAG = {}; // Diagnose
+  const DIAG = {}; // sammelt Diagnose-Daten
+  // --- Diagnose: eingehende Header/Query (NEU) ---
+  const styleHeaderRaw = Array.isArray(req.headers["x-pfpx-style"])
+    ? req.headers["x-pfpx-style"][0]
+    : (req.headers["x-pfpx-style"] || req.headers["x-style"] || "");
+  let styleQueryRaw = "";
+  try {
+    // Next.js gibt req.query; Fallback: URL parsen
+    if (req.query && typeof req.query.style !== "undefined") {
+      styleQueryRaw = Array.isArray(req.query.style) ? req.query.style[0] : String(req.query.style || "");
+    } else if (req.url) {
+      const u = new URL(req.url, "http://localhost");
+      styleQueryRaw = u.searchParams.get("style") || "";
+    }
+  } catch (_) {}
 
   try {
     const ctype = (req.headers["content-type"] || "").toLowerCase();
     let sourceBuffer = null;
     let composeMargin = null;
 
-    // ---- Stil-Inputs sammeln (Body + Header + Query) ----
-    let rawStylesField = null;       // originaler Body-String (falls vorhanden)
-    let requestedStyles = null;      // Array aus Body
-    let forcedStyleHeader = null;    // X-PFPX-Style
-    let forcedStyleQuery  = null;    // ?style=
+    // Roh-Stil-Eingaben (für Diagnose)
+    let rawStylesField = null;      // exakt erhaltene Zeichenkette (z. B. '["vintage"]' oder 'vintage')
+    let requestedStyles = null;     // Array (evtl. vor Normalisierung)
 
-    // Query lesen
-    try {
-      const url = new URL(req.url, 'http://localhost');
-      forcedStyleQuery = url.searchParams.get('style') || null;
-      // Optional: ?styles=['...'] oder comma
-      const stylesQP = url.searchParams.get('styles');
-      if (!forcedStyleQuery && stylesQP) {
-        try {
-          const arr = JSON.parse(stylesQP);
-          if (Array.isArray(arr) && arr[0]) forcedStyleQuery = String(arr[0]);
-        } catch {
-          const first = String(stylesQP).split(',')[0] || '';
-          if (first) forcedStyleQuery = first;
-        }
-      }
-    } catch {}
-
-    // Header lesen
-    forcedStyleHeader = (req.headers['x-pfpx-style'] || req.headers['x-pfpxstyle'] || '').toString() || null;
-
-    // Body lesen
+    // Zielgröße
     const SIZE = 1024;
     const COMPOSE_MARGIN_DEFAULT = 0.40;
 
@@ -249,38 +280,30 @@ export default async function handler(req, res) {
     // Diagnose: Rohdaten
     DIAG.request_styles_sent_raw = rawStylesField ?? null;
 
-    // ---- Single-Style erzwingen (Priorität: Header > Query > Body[0]) ----
-    let forced = forcedStyleHeader || forcedStyleQuery || null;
-    DIAG.request_style_header = forcedStyleHeader || null;
-    DIAG.request_style_query  = forcedStyleQuery  || null;
-
-    // Wenn Body-Stile vorhanden, nehmen wir nur den ersten (Single-Style Produkt-Logik)
-    if (!forced && Array.isArray(requestedStyles) && requestedStyles.length) {
-      forced = String(requestedStyles[0]);
+    // Fallback: Wenn kein Stil im Body kam, nutze ggf. Header oder Query NUR für Diagnose/Tests
+    if ((!requestedStyles || !requestedStyles.length) && styleHeaderRaw) {
+      requestedStyles = [ String(styleHeaderRaw) ];
+      rawStylesField = String(styleHeaderRaw);
+    }
+    if ((!requestedStyles || !requestedStyles.length) && styleQueryRaw) {
+      requestedStyles = [ String(styleQueryRaw) ];
+      rawStylesField = String(styleQueryRaw);
     }
 
-    // Normalisieren
-    let normalized = [];
-    if (Array.isArray(requestedStyles) && requestedStyles.length) {
-      normalized = requestedStyles.map(normalizeStyle).filter(Boolean);
-    }
-    // erzwungenen Stil vorrangig setzen
-    let filtered = [];
-    if (forced) {
-      const nf = normalizeStyle(forced);
-      if (nf && ALLOWED.includes(nf)) {
-        filtered = [nf];
-      }
-    }
-    // falls noch leer, ggf. aus Body-normalisiert nehmen
-    if (filtered.length === 0 && normalized.length) {
-      filtered = normalized.filter(s => ALLOWED.includes(s));
-      if (filtered.length) filtered = [filtered[0]]; // Single-Style
-    }
+    // Normalisieren + validieren
+    let normalized = Array.isArray(requestedStyles) ? requestedStyles.map(normalizeStyle).filter(Boolean) : [];
+    // Duplikate raus
+    normalized = Array.from(new Set(normalized));
+    // Nur erlaubte
+    let filtered = normalized.filter(s => ALLOWED.includes(s));
 
-    // Fallback
+    // Diagnose
     DIAG.request_styles_array = normalized;
+    DIAG.style_header = styleHeaderRaw || "";
+    DIAG.style_query  = styleQueryRaw  || "";
+
     if (filtered.length === 0) {
+      // Kein gültiger Stil → Neon als Fallback (wie bisher)
       filtered = ["neon"];
       DIAG.fallback_used = true;
     }
@@ -294,18 +317,7 @@ export default async function handler(req, res) {
     const margin = composeMargin == null ? COMPOSE_MARGIN_DEFAULT : composeMargin;
     DIAG.compose_margin = margin;
 
-    // Outpaint-Canvas
-    const subjectSize = Math.round(SIZE * (1 - 2 * Math.max(0, Math.min(margin, 0.49))));
-    const pad = Math.round(SIZE * Math.max(0, Math.min(margin, 0.49)));
-    const subjectPng = await sharp(inputPng)
-      .resize(subjectSize, subjectSize, { fit: "contain", background: { r:0,g:0,b:0,alpha:0 } })
-      .png().toBuffer();
-    const imageForEdit = await sharp({
-      create: {
-        width: SIZE, height: SIZE, channels: 4,
-        background: { r: 0, g: 0, b: 0, alpha: 0 }
-      }
-    }).composite([{ input: subjectPng, left: pad, top: pad }]).png().toBuffer();
+    const imageForEdit = await makeOutpaintCanvas(inputPng, SIZE, margin);
 
     const prompts = buildPrompts();
 
@@ -313,6 +325,7 @@ export default async function handler(req, res) {
     const failed = [];
     for (const style of filtered) {
       await sleep(150 + Math.round(Math.random()*300));
+
       const form = new FormData();
       form.set("model", "gpt-image-1");
       form.set("image", new File([imageForEdit], "image.png", { type: "image/png" }));
@@ -322,19 +335,39 @@ export default async function handler(req, res) {
 
       try {
         const outUrl = await fetchOpenAIWithRetry(form, style, { retries: 4, baseDelayMs: 1000 });
-        previews[style] = outUrl; // 🔐 Key = gewünschter Stil
+        previews[style] = outUrl;
       } catch (e) {
         console.error(`❌ Stil '${style}' fehlgeschlagen:`, String(e));
         failed.push(style);
       }
     }
 
+    // Diagnose: welche Keys kamen zurück
     DIAG.upstream_previews_keys = Object.keys(previews);
     DIAG.upstream_failed = failed;
+    DIAG.version = VERSION;
+    DIAG.endpoint = req.url || "";
+
+    const finalStyle = (filtered && filtered[0]) || "";
 
     if (Object.keys(previews).length === 0) {
+      setDiagHeaders(res, {
+        styleHeader: styleHeaderRaw,
+        styleQuery:  styleQueryRaw,
+        normalized,
+        finalStyle,
+        version: VERSION
+      });
       return res.status(502).json({ success: false, error: "Alle Stile fehlgeschlagen.", diag: DIAG });
     }
+
+    setDiagHeaders(res, {
+      styleHeader: styleHeaderRaw,
+      styleQuery:  styleQueryRaw,
+      normalized,
+      finalStyle,
+      version: VERSION
+    });
 
     return res.status(200).json({
       success: true,
@@ -342,10 +375,20 @@ export default async function handler(req, res) {
       failed,
       compose_margin: margin,
       diag: DIAG,
-      version: "PFPX-2025-08c"
+      version: VERSION
     });
   } catch (err) {
     console.error("generate-fix.js error:", err);
-    return res.status(500).json({ error: "Interner Serverfehler", diag: DIAG || null });
+    // Versuche auch im Fehlerfall Header mitzugeben
+    try {
+      setDiagHeaders(res, {
+        styleHeader: styleHeaderRaw,
+        styleQuery:  styleQueryRaw,
+        normalized: [],
+        finalStyle: "",
+        version: VERSION
+      });
+    } catch(_) {}
+    return res.status(500).json({ error: "Interner Serverfehler", diag: DIAG || null, version: VERSION });
   }
 }
