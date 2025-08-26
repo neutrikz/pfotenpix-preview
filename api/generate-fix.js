@@ -1,4 +1,4 @@
-// /api/generate-fix.js – Edits ohne Outpainting, Stil + Kompositionshinweis (kleineres, zentriertes Motiv)
+// /api/generate-fix.js – Edit ohne Maske, nur Prompt-Steuerung (Motiv ~30%, viel Hintergrund)
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
@@ -25,9 +25,7 @@ function parseMultipart(buffer, boundary) {
   const delim = `--${boundary}`;
   const closeDelim = `--${boundary}--`;
   const body = buffer.toString("binary");
-  const parts = body
-    .split(delim)
-    .filter((p) => p && p !== "--" && p !== closeDelim);
+  const parts = body.split(delim).filter(p => p && p !== "--" && p !== closeDelim);
   const fields = {}, files = {};
   for (let rawPart of parts) {
     if (rawPart.startsWith(CRLF)) rawPart = rawPart.slice(CRLF.length);
@@ -40,8 +38,7 @@ function parseMultipart(buffer, boundary) {
     const headers = {};
     for (const line of rawHeaders.split(CRLF)) {
       const j = line.indexOf(":");
-      if (j > -1)
-        headers[line.slice(0, j).trim().toLowerCase()] = line.slice(j + 1).trim();
+      if (j > -1) headers[line.slice(0, j).trim().toLowerCase()] = line.slice(j + 1).trim();
     }
     const cd = headers["content-disposition"] || "";
     const name = (cd.match(/name="([^"]+)"/i) || [])[1];
@@ -49,11 +46,7 @@ function parseMultipart(buffer, boundary) {
     const ctype = headers["content-type"] || "";
     if (!name) continue;
     if (filename) {
-      files[name] = {
-        filename,
-        contentType: ctype || "application/octet-stream",
-        buffer: Buffer.from(rawContent, "binary"),
-      };
+      files[name] = { filename, contentType: ctype || "application/octet-stream", buffer: Buffer.from(rawContent, "binary") };
     } else {
       fields[name] = Buffer.from(rawContent, "binary").toString("utf8");
     }
@@ -61,8 +54,8 @@ function parseMultipart(buffer, boundary) {
   return { fields, files };
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const withJitter = (ms) => Math.round(ms * (0.85 + Math.random() * 0.3));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const withJitter = ms => Math.round(ms * (0.85 + Math.random() * 0.3));
 
 function extractUrlOrDataUri(json) {
   const item = json?.data?.[0];
@@ -81,17 +74,8 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
         headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, ...form.headers },
         body: form,
       });
-      const reqId =
-        resp.headers?.get?.("x-request-id") ||
-        resp.headers?.get?.("x-requestid") ||
-        "";
       const txt = await resp.text();
-      let json;
-      try {
-        json = JSON.parse(txt);
-      } catch {
-        json = null;
-      }
+      let json; try { json = JSON.parse(txt); } catch { json = null; }
       if (resp.ok) {
         const out = extractUrlOrDataUri(json);
         if (out) return out;
@@ -103,10 +87,7 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
         lastError = new Error(json?.error?.message || `HTTP ${resp.status}`);
         break;
       }
-      const wait = Math.max(
-        withJitter(baseDelayMs * Math.pow(2, attempt - 1)),
-        retryAfter * 1000
-      );
+      const wait = Math.max(withJitter(baseDelayMs * Math.pow(2, attempt - 1)), retryAfter * 1000);
       await sleep(wait);
     } catch (err) {
       lastError = err;
@@ -118,165 +99,114 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
   throw lastError || new Error("OpenAI fehlgeschlagen");
 }
 
-// ===== Prompts (Komposition erzwingen: kleiner, mittig, Rand, drehbar) =====
-function buildPrompts(userText, { composeMargin } = {}) {
-  // composeMargin kommt als Anteil je Seite (0–0.35), z.B. 0.22 = 22% Rand
-  const margin = Math.min(Math.max(Number(composeMargin ?? 0.22), 0.12), 0.35);
-  const marginPct = Math.round(margin * 100);
-
-  // grobe Zielgröße des Motivs als Prozent der Kantenlänge
-  // (etwas Sicherheitsabzug gegenüber 1 - 2*margin)
-  const approxSubject = Math.max(0.45, Math.min(0.75, (1 - 2 * margin) - 0.06));
-  const subjectPct = Math.round(approxSubject * 100);
-
-  const composition = [
-    "Recompose the square canvas so the subject is perfectly centered and upright.",
-    `Scale the subject smaller so it occupies about ~${subjectPct}% of the frame,`,
-    `leaving a clean, frame-safe margin of ~${marginPct}% on all sides (no tight crop, no zoom-in).`,
-    "Extend and continue the existing background naturally into the negative space; no hard borders, no graphic frames.",
-    "Do not crop ears/whiskers; keep symmetry and stability so the result also reads well when rotated by 90 degrees."
+// ===== Prompts – Motiv ~30 %, zentriert, viel negativer Raum, später gut croppbar =====
+function buildPrompts(userText) {
+  const comp = [
+    "Composition: center the pet and leave generous negative space.",
+    "The subject should cover about 30% of the frame (small in frame), with ~70% clean background.",
+    "Ensure the whole head and silhouette are fully visible with comfortable top/bottom and side margins.",
+    "Background must be coherent and smoothly extended from the original (no hard borders, no frames).",
+    "Design the background to work in both portrait and landscape crops later; avoid elements that break when rotated.",
+    "Do not zoom in; do not tightly crop; no added borders or picture frames."
   ].join(" ");
 
   const guardrails = [
-    "This is the same real pet; preserve the exact species and identity.",
-    "Keep anatomy and facial proportions unchanged; no cartoonification.",
-    "Ultra-detailed, artifact-free; suitable for fine-art printing."
+    "This is the same real pet; preserve exact identity, anatomy and markings.",
+    "Keep proportions and facial structure unchanged; no cartoonification; artifact-free.",
+    comp
   ].join(" ");
 
   const nat = [
-    composition,
     "High-end studio portrait retouch, premium magazine quality.",
-    "Soft diffused key light with subtle rim; refined micro-contrast in fur; elegant neutral backdrop with smooth falloff.",
-    "No HDR look, no plastic skin.",
+    "Soft diffused key light with subtle rim; refined micro-contrast; elegant neutral backdrop with smooth falloff.",
     guardrails,
-    userText ? `If text is provided, integrate it tastefully and small near the bottom margin: "${userText}".` : ""
+    userText ? `If text is provided, integrate it small and tasteful: "${userText}".` : ""
   ].join(" ");
 
   const bw = [
-    composition,
     "Fine-art black and white conversion (true grayscale).",
-    "Deep blacks, controlled highlights, rich midtones; delicate film grain; crisp whiskers and eyes; dramatic directional lighting.",
-    "No color tints.",
+    "Deep blacks, controlled highlights, rich midtones; delicate film grain; crisp whiskers and eyes.",
     guardrails,
-    userText ? `If text is provided, render in monochrome, subtle near the bottom margin: "${userText}".` : ""
+    userText ? `If text is provided, render it subtle and monochrome: "${userText}".` : ""
   ].join(" ");
 
   const neon = [
-    composition,
-    "Neon pop-art overlay while preserving the exact pet identity and silhouette.",
-    "Cyan, magenta and orange rim-light strokes following fur contours; smooth neon gradients with gentle halation and glow on a coherent dark backdrop.",
+    "Neon pop-art styling while preserving the exact pet identity and silhouette.",
+    "Cyan, magenta and orange rim-light accents; smooth neon gradients with gentle halation on a dark backdrop.",
     guardrails,
-    userText ? `Add matching neon typography, small and tasteful near the bottom margin: "${userText}".` : ""
+    userText ? `Add matching neon typography, very small and tasteful: "${userText}".` : ""
   ].join(" ");
 
   return { natural: nat, "schwarzweiß": bw, neon };
 }
 
-// ===== (früher) Outpainting-Canvas – bleibt als Helper erhalten, wird aber NICHT mehr verwendet =====
-async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
-  const m = Math.max(0, Math.min(marginPct || 0, 0.30));
-  const subjectSize = Math.round(targetSize * (1 - 2 * m));
-  const pad = Math.round(targetSize * m);
-  const subjectPng = await sharp(inputBuffer)
-    .resize(subjectSize, subjectSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .png()
-    .toBuffer();
-  const canvas = await sharp({
-    create: {
-      width: targetSize,
-      height: targetSize,
-      channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 0 }
-    }
-  })
-    .composite([{ input: subjectPng, left: pad, top: pad }])
-    .png()
-    .toBuffer();
-  return canvas;
-}
-
 export default async function handler(req, res) {
   applyCORS(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST") return res.status(405).end();
+  if (req.method !== "POST")   return res.status(405).end();
 
   try {
     const ctype = (req.headers["content-type"] || "").toLowerCase();
-    let sourceBuffer = null,
-      userText = "",
-      requestedStyles = null,
-      composeMargin = null;
+    let sourceBuffer = null, userText = "", requestedStyles = null;
 
-    // Standardwerte
+    // Zielgröße (OpenAI erlaubt 1024 zuverlässig)
     const SIZE = 1024;
-    const COMPOSE_MARGIN_DEFAULT = 0.22; // ~22% je Seite als Default (nur noch für Prompt, nicht mehr für Canvas)
 
     if (ctype.startsWith("multipart/form-data")) {
       const m = /boundary=([^;]+)/i.exec(ctype);
       if (!m) return res.status(400).json({ error: "Bad multipart (no boundary)" });
       const { fields, files } = parseMultipart(await readRawBody(req), m[1]);
-      const f = files["file"];
-      if (!f?.buffer) return res.status(400).json({ error: "No file uploaded" });
+      const f = files["file"]; if (!f?.buffer) return res.status(400).json({ error: "No file uploaded" });
       sourceBuffer = f.buffer;
       userText = (fields["custom_text"] || fields["text"] || "").toString();
-      if (fields["styles"]) {
-        try {
-          const s = JSON.parse(fields["styles"]);
-          if (Array.isArray(s)) requestedStyles = s;
-        } catch {}
-      }
-      if (fields["compose_margin"]) {
-        const v = parseFloat(fields["compose_margin"]);
-        if (Number.isFinite(v)) composeMargin = v;
-      }
+      if (fields["styles"]) { try { const s = JSON.parse(fields["styles"]); if (Array.isArray(s)) requestedStyles = s; } catch {} }
     } else if (ctype.includes("application/json")) {
       const body = JSON.parse((await readRawBody(req)).toString("utf8") || "{}");
-      const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/, "");
+      const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/,"");
       if (!b64) return res.status(400).json({ error: "Kein Bild empfangen." });
       sourceBuffer = Buffer.from(b64, "base64");
       userText = body.userText || "";
       if (Array.isArray(body.styles)) requestedStyles = body.styles;
-      if (body.compose_margin != null) {
-        const v = parseFloat(body.compose_margin);
-        if (Number.isFinite(v)) composeMargin = v;
-      }
     } else {
       return res.status(415).json({ error: "Unsupported Content-Type" });
     }
 
-    // Input auf 1024x1024 normieren (ohne Beschneiden)
+    // Input auf 1024x1024 normieren (contain, keine Beschneidung)
     const inputPng = await sharp(sourceBuffer)
-      .resize(SIZE, SIZE, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .resize(SIZE, SIZE, { fit: "contain", background: { r:0,g:0,b:0,alpha:0 } })
       .png()
       .toBuffer();
 
-    // KEIN Outpainting mehr: Wir geben immer das normalisierte Bild an die Edits-API
-    const margin = composeMargin == null ? COMPOSE_MARGIN_DEFAULT : composeMargin;
+    // Ohne Maske/Outpainting: wir steuern alles über den Prompt
     const imageForEdit = inputPng;
 
-    const prompts = buildPrompts(userText, { composeMargin: margin });
-    const allStyles = ["natural", "schwarzweiß", "neon"];
-    const styles = requestedStyles && requestedStyles.length
-      ? requestedStyles.filter((s) => allStyles.includes(s))
-      : allStyles;
+    const prompts = buildPrompts(userText);
+
+    // ⚠️ TEMPORÄR: Nur NEON generieren, um Credits zu sparen.
+    // Für Livebetrieb wieder DEFAULT_STYLES = ['natural','schwarzweiß','neon'] setzen.
+    const DEFAULT_STYLES = ['neon'];
+    const ALLOWED = ['natural','schwarzweiß','neon'];
+    const styles = (requestedStyles && requestedStyles.length)
+      ? requestedStyles.filter(s => ALLOWED.includes(s))
+      : DEFAULT_STYLES;
 
     const previews = {};
     const failed = [];
 
     for (const style of styles) {
-      await sleep(250 + Math.round(Math.random() * 400)); // kleiner Cooldown
+      await sleep(250 + Math.round(Math.random()*400));
 
       const form = new FormData();
       form.set("model", "gpt-image-1");
       form.set("image", new File([imageForEdit], "image.png", { type: "image/png" }));
-      // Keine Maske: wir steuern die Re-Komposition ausschließlich über den Prompt
+      // keine Maske → das Modell darf das ganze Bild bearbeiten
       form.set("prompt", prompts[style] || "");
       form.set("n", "1");
-      form.set("size", "1024x1024"); // 1024 ist überall erlaubt
+      form.set("size", "1024x1024");
 
       try {
         const outUrl = await fetchOpenAIWithRetry(form, style, { retries: 4, baseDelayMs: 1000 });
-        previews[style] = outUrl; // http-URL ODER data:URL
+        previews[style] = outUrl;
       } catch (e) {
         console.error(`❌ Stil '${style}' fehlgeschlagen:`, String(e));
         failed.push(style);
@@ -286,7 +216,7 @@ export default async function handler(req, res) {
     if (Object.keys(previews).length === 0) {
       return res.status(502).json({ success: false, error: "Alle Stile fehlgeschlagen.", failed });
     }
-    return res.status(200).json({ success: true, previews, failed, compose_margin: margin });
+    return res.status(200).json({ success: true, previews, failed });
   } catch (err) {
     console.error("generate-fix.js error:", err);
     return res.status(500).json({ error: "Interner Serverfehler" });
