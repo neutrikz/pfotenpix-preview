@@ -1,4 +1,4 @@
-// /api/generate-fix.js – Edits mit Outpainting + Stil, optionaler Kompositionsrand
+// /api/generate-fix.js – Edits ohne Outpainting, Stil + Kompositionshinweis (kleineres, zentriertes Motiv)
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
@@ -28,8 +28,7 @@ function parseMultipart(buffer, boundary) {
   const parts = body
     .split(delim)
     .filter((p) => p && p !== "--" && p !== closeDelim);
-  const fields = {},
-    files = {};
+  const fields = {}, files = {};
   for (let rawPart of parts) {
     if (rawPart.startsWith(CRLF)) rawPart = rawPart.slice(CRLF.length);
     const sep = CRLF + CRLF;
@@ -42,9 +41,7 @@ function parseMultipart(buffer, boundary) {
     for (const line of rawHeaders.split(CRLF)) {
       const j = line.indexOf(":");
       if (j > -1)
-        headers[line.slice(0, j).trim().toLowerCase()] = line
-          .slice(j + 1)
-          .trim();
+        headers[line.slice(0, j).trim().toLowerCase()] = line.slice(j + 1).trim();
     }
     const cd = headers["content-disposition"] || "";
     const name = (cd.match(/name="([^"]+)"/i) || [])[1];
@@ -121,55 +118,69 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
   throw lastError || new Error("OpenAI fehlgeschlagen");
 }
 
-// ===== Prompts (mit Kompositionshinweis) =====
-function buildPrompts(userText) {
+// ===== Prompts (Komposition erzwingen: kleiner, mittig, Rand, drehbar) =====
+function buildPrompts(userText, { composeMargin } = {}) {
+  // composeMargin kommt als Anteil je Seite (0–0.35), z.B. 0.22 = 22% Rand
+  const margin = Math.min(Math.max(Number(composeMargin ?? 0.22), 0.12), 0.35);
+  const marginPct = Math.round(margin * 100);
+
+  // grobe Zielgröße des Motivs als Prozent der Kantenlänge
+  // (etwas Sicherheitsabzug gegenüber 1 - 2*margin)
+  const approxSubject = Math.max(0.45, Math.min(0.75, (1 - 2 * margin) - 0.06));
+  const subjectPct = Math.round(approxSubject * 100);
+
+  const composition = [
+    "Recompose the square canvas so the subject is perfectly centered and upright.",
+    `Scale the subject smaller so it occupies about ~${subjectPct}% of the frame,`,
+    `leaving a clean, frame-safe margin of ~${marginPct}% on all sides (no tight crop, no zoom-in).`,
+    "Extend and continue the existing background naturally into the negative space; no hard borders, no graphic frames.",
+    "Do not crop ears/whiskers; keep symmetry and stability so the result also reads well when rotated by 90 degrees."
+  ].join(" ");
+
   const guardrails = [
     "This is the same real pet; preserve the exact species and identity.",
     "Keep anatomy and facial proportions unchanged; no cartoonification.",
-    "Ultra-detailed, artifact-free; suitable for fine-art printing.",
-    "Composition: subject centered with generous negative space; subject occupies about 70% of the frame; extend and complete the surrounding background seamlessly into the margins."
+    "Ultra-detailed, artifact-free; suitable for fine-art printing."
   ].join(" ");
 
   const nat = [
+    composition,
     "High-end studio portrait retouch, premium magazine quality.",
     "Soft diffused key light with subtle rim; refined micro-contrast in fur; elegant neutral backdrop with smooth falloff.",
     "No HDR look, no plastic skin.",
     guardrails,
-    userText ? `If text is provided, integrate it tastefully and small: "${userText}".` : ""
+    userText ? `If text is provided, integrate it tastefully and small near the bottom margin: "${userText}".` : ""
   ].join(" ");
 
   const bw = [
+    composition,
     "Fine-art black and white conversion (true grayscale).",
     "Deep blacks, controlled highlights, rich midtones; delicate film grain; crisp whiskers and eyes; dramatic directional lighting.",
     "No color tints.",
     guardrails,
-    userText ? `If text is provided, render in monochrome, subtle: "${userText}".` : ""
+    userText ? `If text is provided, render in monochrome, subtle near the bottom margin: "${userText}".` : ""
   ].join(" ");
 
   const neon = [
+    composition,
     "Neon pop-art overlay while preserving the exact pet identity and silhouette.",
-    "Cyan, magenta and orange rim-light strokes following fur contours; smooth neon gradients with gentle halation and glow on a dark background.",
+    "Cyan, magenta and orange rim-light strokes following fur contours; smooth neon gradients with gentle halation and glow on a coherent dark backdrop.",
     guardrails,
-    userText ? `Add matching neon typography, small and tasteful: "${userText}".` : ""
+    userText ? `Add matching neon typography, small and tasteful near the bottom margin: "${userText}".` : ""
   ].join(" ");
 
   return { natural: nat, "schwarzweiß": bw, neon };
 }
 
-// ===== Outpainting-Canvas (Motiv kleiner + transparente Ränder) =====
+// ===== (früher) Outpainting-Canvas – bleibt als Helper erhalten, wird aber NICHT mehr verwendet =====
 async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
-  // marginPct je Seite (0.00–0.30); Motivgröße = 1 - 2*margin
   const m = Math.max(0, Math.min(marginPct || 0, 0.30));
   const subjectSize = Math.round(targetSize * (1 - 2 * m));
   const pad = Math.round(targetSize * m);
-
-  // Motiv verkleinern (transparenter Hintergrund)
   const subjectPng = await sharp(inputBuffer)
     .resize(subjectSize, subjectSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .png()
     .toBuffer();
-
-  // Leere Canvas + zentriert einbetten
   const canvas = await sharp({
     create: {
       width: targetSize,
@@ -181,8 +192,7 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
     .composite([{ input: subjectPng, left: pad, top: pad }])
     .png()
     .toBuffer();
-
-  return canvas; // Transparente Ränder → werden von OpenAI outgepaintet
+  return canvas;
 }
 
 export default async function handler(req, res) {
@@ -199,7 +209,7 @@ export default async function handler(req, res) {
 
     // Standardwerte
     const SIZE = 1024;
-    const COMPOSE_MARGIN_DEFAULT = 0.12; // 12% je Seite ≈ Motiv 76% – passe hier an (z.B. 0.10)
+    const COMPOSE_MARGIN_DEFAULT = 0.22; // ~22% je Seite als Default (nur noch für Prompt, nicht mehr für Canvas)
 
     if (ctype.startsWith("multipart/form-data")) {
       const m = /boundary=([^;]+)/i.exec(ctype);
@@ -234,17 +244,17 @@ export default async function handler(req, res) {
       return res.status(415).json({ error: "Unsupported Content-Type" });
     }
 
-    // Input auf 1024x1024 normieren (ohne zu beschneiden)
+    // Input auf 1024x1024 normieren (ohne Beschneiden)
     const inputPng = await sharp(sourceBuffer)
       .resize(SIZE, SIZE, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
       .png()
       .toBuffer();
 
-    // Outpainting-Canvas vorbereiten (Motiv kleiner + transparente Ränder)
+    // KEIN Outpainting mehr: Wir geben immer das normalisierte Bild an die Edits-API
     const margin = composeMargin == null ? COMPOSE_MARGIN_DEFAULT : composeMargin;
-    const imageForEdit = margin > 0 ? await makeOutpaintCanvas(inputPng, SIZE, margin) : inputPng;
+    const imageForEdit = inputPng;
 
-    const prompts = buildPrompts(userText);
+    const prompts = buildPrompts(userText, { composeMargin: margin });
     const allStyles = ["natural", "schwarzweiß", "neon"];
     const styles = requestedStyles && requestedStyles.length
       ? requestedStyles.filter((s) => allStyles.includes(s))
@@ -258,12 +268,11 @@ export default async function handler(req, res) {
 
       const form = new FormData();
       form.set("model", "gpt-image-1");
-      // Wichtig: PNG mit transparenter Randzone → OpenAI füllt nur die Ränder
       form.set("image", new File([imageForEdit], "image.png", { type: "image/png" }));
-      // Keine Maske übergeben → transparente Pixel sind die Edit-Zone
+      // Keine Maske: wir steuern die Re-Komposition ausschließlich über den Prompt
       form.set("prompt", prompts[style] || "");
       form.set("n", "1");
-      form.set("size", "1024x1024"); // Konto-abhängig; 1024 ist überall erlaubt
+      form.set("size", "1024x1024"); // 1024 ist überall erlaubt
 
       try {
         const outUrl = await fetchOpenAIWithRetry(form, style, { retries: 4, baseDelayMs: 1000 });
