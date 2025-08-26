@@ -1,5 +1,5 @@
-// /api/generate-fix.js – Outpainting + Single-Style + Diagnose
-// Version: PFPX 2025-08c (DIAG+)
+// /api/generate-fix.js – Outpainting + Single-Style + Diagnose (forced style supported)
+// Version: PFPX 2025-08c
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
@@ -11,9 +11,7 @@ function applyCORS(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "*");
-  res.setHeader("Access-Control-Expose-Headers", "x-request-id,retry-after,x-pfpx-version");
-  // Diagnose: build/version zur Laufzeit mitschicken
-  res.setHeader("x-pfpx-version", "PFPX-2025-08c");
+  res.setHeader("Access-Control-Expose-Headers", "x-request-id,retry-after");
 }
 
 // ===== Helpers =====
@@ -102,32 +100,6 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
   throw lastError || new Error("OpenAI fehlgeschlagen");
 }
 
-// ===== Outpainting-Canvas =====
-async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
-  const m = Math.max(0, Math.min(marginPct ?? 0, 0.49));
-  const subjectSize = Math.round(targetSize * (1 - 2 * m));
-  const pad = Math.round(targetSize * m);
-
-  const subjectPng = await sharp(inputBuffer)
-    .resize(subjectSize, subjectSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .png()
-    .toBuffer();
-
-  const canvas = await sharp({
-    create: {
-      width: targetSize,
-      height: targetSize,
-      channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 0 }
-    }
-  })
-    .composite([{ input: subjectPng, left: pad, top: pad }])
-    .png()
-    .toBuffer();
-
-  return canvas;
-}
-
 // ===== Prompts =====
 function buildPrompts() {
   const comp =
@@ -201,24 +173,40 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST")   return res.status(405).end();
 
-  const DIAG = {}; // sammelt Diagnose-Daten
-  DIAG.version = "PFPX-2025-08c";
-  DIAG.allowed = ALLOWED;
-  DIAG.route = req.url || "";
+  const DIAG = {}; // Diagnose
 
   try {
     const ctype = (req.headers["content-type"] || "").toLowerCase();
-    const hdrStyle = (req.headers["x-pfpx-style"] || "").toString();
-    DIAG.hdr_style = hdrStyle || null;
-
     let sourceBuffer = null;
     let composeMargin = null;
 
-    // Roh-Stil-Eingaben
-    let rawStylesField = null;      // exakt erhaltene Zeichenkette (z. B. '["vintage"]' oder 'vintage')
-    let requestedStyles = null;     // Array (evtl. vor Normalisierung)
+    // ---- Stil-Inputs sammeln (Body + Header + Query) ----
+    let rawStylesField = null;       // originaler Body-String (falls vorhanden)
+    let requestedStyles = null;      // Array aus Body
+    let forcedStyleHeader = null;    // X-PFPX-Style
+    let forcedStyleQuery  = null;    // ?style=
 
-    // Zielgröße
+    // Query lesen
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      forcedStyleQuery = url.searchParams.get('style') || null;
+      // Optional: ?styles=['...'] oder comma
+      const stylesQP = url.searchParams.get('styles');
+      if (!forcedStyleQuery && stylesQP) {
+        try {
+          const arr = JSON.parse(stylesQP);
+          if (Array.isArray(arr) && arr[0]) forcedStyleQuery = String(arr[0]);
+        } catch {
+          const first = String(stylesQP).split(',')[0] || '';
+          if (first) forcedStyleQuery = first;
+        }
+      }
+    } catch {}
+
+    // Header lesen
+    forcedStyleHeader = (req.headers['x-pfpx-style'] || req.headers['x-pfpxstyle'] || '').toString() || null;
+
+    // Body lesen
     const SIZE = 1024;
     const COMPOSE_MARGIN_DEFAULT = 0.40;
 
@@ -261,29 +249,41 @@ export default async function handler(req, res) {
     // Diagnose: Rohdaten
     DIAG.request_styles_sent_raw = rawStylesField ?? null;
 
-    // Header-Stil als Prio 0 vorn anstellen (falls gesetzt)
-    if (hdrStyle) {
-      if (!requestedStyles) requestedStyles = [];
-      requestedStyles.unshift(hdrStyle);
+    // ---- Single-Style erzwingen (Priorität: Header > Query > Body[0]) ----
+    let forced = forcedStyleHeader || forcedStyleQuery || null;
+    DIAG.request_style_header = forcedStyleHeader || null;
+    DIAG.request_style_query  = forcedStyleQuery  || null;
+
+    // Wenn Body-Stile vorhanden, nehmen wir nur den ersten (Single-Style Produkt-Logik)
+    if (!forced && Array.isArray(requestedStyles) && requestedStyles.length) {
+      forced = String(requestedStyles[0]);
     }
 
-    // Normalisieren + validieren
-    let normalized = Array.isArray(requestedStyles) ? requestedStyles.map(normalizeStyle).filter(Boolean) : [];
-    normalized = Array.from(new Set(normalized)); // Duplikate raus
+    // Normalisieren
+    let normalized = [];
+    if (Array.isArray(requestedStyles) && requestedStyles.length) {
+      normalized = requestedStyles.map(normalizeStyle).filter(Boolean);
+    }
+    // erzwungenen Stil vorrangig setzen
+    let filtered = [];
+    if (forced) {
+      const nf = normalizeStyle(forced);
+      if (nf && ALLOWED.includes(nf)) {
+        filtered = [nf];
+      }
+    }
+    // falls noch leer, ggf. aus Body-normalisiert nehmen
+    if (filtered.length === 0 && normalized.length) {
+      filtered = normalized.filter(s => ALLOWED.includes(s));
+      if (filtered.length) filtered = [filtered[0]]; // Single-Style
+    }
 
-    let filtered = normalized.filter(s => ALLOWED.includes(s));
-
-    // Diagnose erweitern
-    DIAG.request_styles_array = Array.isArray(requestedStyles) ? requestedStyles : [];
-    DIAG.normalized_styles   = normalized;
-    DIAG.filtered_styles     = filtered;
-
-    let fallback_used = false;
+    // Fallback
+    DIAG.request_styles_array = normalized;
     if (filtered.length === 0) {
       filtered = ["neon"];
-      fallback_used = true;
+      DIAG.fallback_used = true;
     }
-    DIAG.fallback_used = fallback_used;
 
     // Bild vorbereiten
     const inputPng = await sharp(sourceBuffer)
@@ -294,7 +294,18 @@ export default async function handler(req, res) {
     const margin = composeMargin == null ? COMPOSE_MARGIN_DEFAULT : composeMargin;
     DIAG.compose_margin = margin;
 
-    const imageForEdit = await makeOutpaintCanvas(inputPng, SIZE, margin);
+    // Outpaint-Canvas
+    const subjectSize = Math.round(SIZE * (1 - 2 * Math.max(0, Math.min(margin, 0.49))));
+    const pad = Math.round(SIZE * Math.max(0, Math.min(margin, 0.49)));
+    const subjectPng = await sharp(inputPng)
+      .resize(subjectSize, subjectSize, { fit: "contain", background: { r:0,g:0,b:0,alpha:0 } })
+      .png().toBuffer();
+    const imageForEdit = await sharp({
+      create: {
+        width: SIZE, height: SIZE, channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      }
+    }).composite([{ input: subjectPng, left: pad, top: pad }]).png().toBuffer();
 
     const prompts = buildPrompts();
 
@@ -302,7 +313,6 @@ export default async function handler(req, res) {
     const failed = [];
     for (const style of filtered) {
       await sleep(150 + Math.round(Math.random()*300));
-
       const form = new FormData();
       form.set("model", "gpt-image-1");
       form.set("image", new File([imageForEdit], "image.png", { type: "image/png" }));
@@ -312,14 +322,13 @@ export default async function handler(req, res) {
 
       try {
         const outUrl = await fetchOpenAIWithRetry(form, style, { retries: 4, baseDelayMs: 1000 });
-        previews[style] = outUrl; // <-- Key entspricht immer dem gewünschten Stil
+        previews[style] = outUrl; // 🔐 Key = gewünschter Stil
       } catch (e) {
         console.error(`❌ Stil '${style}' fehlgeschlagen:`, String(e));
         failed.push(style);
       }
     }
 
-    // Diagnose: welche Keys kamen zurück
     DIAG.upstream_previews_keys = Object.keys(previews);
     DIAG.upstream_failed = failed;
 
