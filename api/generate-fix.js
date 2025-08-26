@@ -103,7 +103,7 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
 function buildPrompts(userText) {
   const comp = [
     "Composition: center the pet and leave generous negative space.",
-    "The subject should cover about 30% of the frame (small in frame), with ~70% clean background.",
+    "The subject should cover about 20% of the frame (small in frame), with ~80% clean background.",
     "Ensure the whole head and silhouette are fully visible with comfortable top/bottom and side margins.",
     "Background must be coherent and smoothly extended from the original (no hard borders, no frames).",
     "Design the background to work in both portrait and landscape crops later; avoid elements that break when rotated.",
