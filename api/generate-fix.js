@@ -1,5 +1,5 @@
-// /api/generate-fix.js – Outpainting-Canvas (transparente Ränder) + strenger Kompositions-Prompt
-// Version: PFPX 2025-08 – Single-Style Rendering mit 8 DE-Stilen (inkl. Legacy 'natural'-Fallback)
+// /api/generate-fix.js – Outpainting + Single-Style + Diagnose
+// Version: PFPX 2025-08b
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
@@ -100,9 +100,8 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
   throw lastError || new Error("OpenAI fehlgeschlagen");
 }
 
-// ===== Outpainting-Canvas: Motiv verkleinern + transparente Ränder =====
+// ===== Outpainting-Canvas =====
 async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
-  // marginPct = Anteil je Seite (0.00–0.49). Motivbreite = 1 - 2*marginPct
   const m = Math.max(0, Math.min(marginPct ?? 0, 0.49));
   const subjectSize = Math.round(targetSize * (1 - 2 * m));
   const pad = Math.round(targetSize * m);
@@ -124,101 +123,76 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
     .png()
     .toBuffer();
 
-  return canvas; // Transparente Randzonen → Modell outpaintet Hintergrund
+  return canvas;
 }
 
-// ===== Prompts – 8 Stile (DE), streng: Motiv max. 20–25 %, viel negativer Raum =====
+// ===== Prompts =====
 function buildPrompts() {
   const comp =
-    "Komposition: Motiv strikt mittig und vollständig sichtbar. " +
-    "Das Tier belegt höchstens 20–25% der Bildbreite und -höhe; lasse etwa 40% negativen Raum auf jeder Seite. " +
-    "Nicht heranzoomen; kein enger Beschnitt; keine Rahmen oder Bordüren. " +
-    "Hintergrund nahtlos und kohärent aus der Originalszene heraus erweitern (Outpainting ohne harte Kanten). " +
-    "Das Bild soll auch nachträgliche Hoch- oder Querformat-Crops gut verkraften.";
-
+    "Komposition: Motiv strikt mittig und vollständig sichtbar. Das Tier belegt höchstens 20–25% der Bildbreite und -höhe; lasse etwa 40% negativen Raum auf jeder Seite. Nicht heranzoomen; kein enger Beschnitt; keine Rahmen. Hintergrund nahtlos erweitern. Für spätere Crops geeignet.";
   const identity =
-    "Gleiches reales Haustier; Identität, Fellzeichnung und Anatomie exakt beibehalten. " +
-    "Proportionen und Gesichtsstruktur unverändert; keine Accessoires hinzufügen; keine Cartoonisierung. " +
-    "Keine zusätzlichen Gliedmaßen oder Merkmale; keine Texte oder Logos. " +
-    "Schnurrhaare, Augen, Nase und Fellstruktur scharf und natürlich, ohne Artefakte.";
-
+    "Gleiches reales Haustier; Identität, Fellzeichnung und Anatomie exakt beibehalten. Keine Accessoires, keine Cartoonisierung. Schnurrhaare, Augen, Nase und Fellstruktur scharf und natürlich.";
   const quality =
-    "Drucktaugliche Studioqualität, saubere Kanten, feines natürliches Bokeh, fotorealistisch, sRGB. " +
-    "Sanfte lokale Tonwertsteuerung (Dodge & Burn) nur zur Betonung der natürlichen Details.";
+    "Drucktaugliche Studioqualität, saubere Kanten, fotorealistisch, sRGB, sanfte lokale Tonwertsteuerung.";
 
   return {
-    // 1) Schwarzweiß – extrem edel
     "schwarzweiß": [
-      "Edles Fine-Art-Schwarzweiß-Porträt mit echter Neutralität (keine Farbstiche).",
-      "Tiefe, samtige Schwarztöne mit klarer Zeichnung; fein abgestufte Mitteltöne und kontrollierte, nicht ausgefressene Lichter.",
-      "Sehr feines analoges Korn; mikrofeine Kontrastakzente um Augen, Nase und Maul; weiches, hochwertiges Licht mit sanftem Verlauf.",
-      "Leichte, geschmackvolle Vignette zur Motivführung – niemals auf dem Tier blockierend.",
+      "Edles Fine-Art-Schwarzweiß-Porträt: echte Neutralität, tiefe Schwarztöne, fein abgestufte Mitteltöne, kontrollierte Lichter.",
+      "Feines analoges Korn, Mikro-Kontrast um Augen/Nase/Maul; hochwertiges, weiches Licht, dezente Vignette (nicht aufs Tier).",
       identity, comp, quality
     ].join(" "),
-
-    // 2) Neon – Pop-Rimlight, edel
     "neon": [
-      "Neon-Pop-Look mit subtilen Rim-Lights in Cyan, Magenta und Orange auf dunklem, sanft verlaufendem Hintergrund.",
-      "Weiche Neon-Verläufe mit leichter Halation; Reflexe dezent, ohne das Fell unnatürlich einzufärben.",
-      "Hohe Klarheit an Augen und Schnurrhaaren; edle, moderne Studioanmutung.",
+      "Neon-Pop-Look mit subtilen Rim-Lights in Cyan, Magenta und Orange auf dunklem Verlauf.",
+      "Weiche Neon-Verläufe, leichte Halation, hohe Klarheit an Augen/Schnurrhaaren, moderne Studioanmutung.",
       identity, comp, quality
     ].join(" "),
-
-    // 3) Steampunk – warmes Messing, ohne Props
     "steampunk": [
-      "Warmer Steampunk-Look: tonale Palette aus Messing, Kupfer und dunklem Holz; ein Hauch von industriellem Bokeh (Zahnräder/Ornamente) nur im Hintergrund, unscharf.",
-      "Warmes Wolfram-Licht, dezente Rauch-/Dunststimmung; kein Kitsch, keine Requisiten am Tier.",
-      "Fokus bleibt auf dem Tier; Hintergrund nur als stimmige Bühne.",
+      "Warmer Steampunk-Look: Messing/Kupfer/Dunkelholz-Palette; industrielles Bokeh nur im Hintergrund, unscharf.",
+      "Warmes Wolfram-Licht, dezenter Dunst; kein Kitsch, keine Requisiten am Tier; Fokus bleibt auf dem Tier.",
       identity, comp, quality
     ].join(" "),
-
-    // 4) Cinematic – filmischer Look (Deutsch)
     "cinematic": [
-      "Filmischer Porträt-Look mit sanfter Teal-/Orange-Gradierung: kühle Schatten, warme Highlights, sehr feines Filmkorn.",
-      "Zarte anamorph wirkende Bokeh-Lichter im Hintergrund; minimaler Lens-Bloom; dezente Vignette zur Motivführung.",
-      "Kontrastkurve filmisch, aber natürlich – Fellfarben glaubwürdig, Augen lebendig.",
+      "Filmischer Look mit sanfter Teal/Orange-Gradierung, feines Filmkorn, dezente anamorphe Bokeh-Lichter.",
+      "Kontrast filmisch aber natürlich; Fellfarben glaubwürdig, Augen lebendig, leichte Vignette.",
       identity, comp, quality
     ].join(" "),
-
-    // 5) Pastell – minimal, matt, airy
     "pastell": [
-      "Minimalistischer Pastell-Look: matte, cremige Hintergrundverläufe (Sage/Sand/Blush) mit sehr weichem, diffusen Licht.",
-      "Zurückhaltende Sättigung, luftige Helligkeit; sanfte Schatten, keine harten Kanten.",
-      "Elegante, helle Studiowirkung ohne Plastik- oder Kaugummi-Effekt.",
+      "Minimaler Pastell-Look: matte, cremige Hintergrundverläufe (Sage/Sand/Blush) mit sehr weichem, diffusem Licht.",
+      "Zurückhaltende Sättigung, luftige Helligkeit, elegante helle Studiowirkung.",
       identity, comp, quality
     ].join(" "),
-
-    // 6) Vintage – dezent, hochwertig
     "vintage": [
-      "Hochwertiger Vintage-Look: subtil warmer Elfenbein-/Sepia-Ton, feines analoges Korn, sehr leichte Halation an Spitzlichtern.",
-      "Hauch von Papier-/Druckcharakter nur im Hintergrund (dezent, niemals auf dem Tier); sanfte Vignette.",
-      "Zeitlos, geschmackvoll – keine künstlichen Kratzer oder stark gealterten Artefakte.",
+      "Hochwertiger Vintage-Look: subtil warmer Elfenbein-/Sepia-Ton, feines analoges Korn, leichte Halation.",
+      "Hauch von Papier-/Druckcharakter nur im Hintergrund, sanfte Vignette, zeitlos und geschmackvoll.",
       identity, comp, quality
     ].join(" "),
-
-    // 7) Highkey – hell, klar, ohne Clipping
     "highkey": [
-      "Helles High-Key-Porträt auf beinahe weißem Hintergrund, breite weiche Lichtquellen, sehr sanfte Schatten.",
-      "Keine ausgefressenen Highlights – Zeichnung in hellen Fellpartien bewahren; klare Konturen, lebendige Augen.",
-      "Sauber, modern, luftig; trotzdem feine Mikrostruktur im Fell erhalten.",
+      "Helles High-Key-Porträt auf fast weißem Hintergrund, breite weiche Lichtquellen, sehr sanfte Schatten.",
+      "Keine ausgefressenen Highlights; klare Konturen, lebendige Augen; sauber, modern, luftig.",
       identity, comp, quality
     ].join(" "),
-
-    // 8) Lowkey – tief, dramatisch, mit Zeichnung
     "lowkey": [
-      "Dramatisches Low-Key-Porträt auf tiefem Graphit-/Schwarz-Hintergrund mit gerichteter Lichtführung (Rembrandt-/Edge-Light-Charakter).",
-      "Tiefe Schwarztöne mit Zeichnung, sanfte Glanzlichter auf Fellkanten, deutliches aber elegantes Licht-/Schatten-Modelling.",
-      "Stimmungsvoll, ohne das Tier im Schwarz versinken zu lassen.",
+      "Dramatisches Low-Key-Porträt auf tiefem Graphit/Schwarz, gerichtete Lichtführung (Edge-/Rembrandt-Licht).",
+      "Tiefe Schwarztöne MIT Zeichnung, sanfte Glanzlichter an Fellkanten; stimmungsvoll ohne Absaufen.",
       identity, comp, quality
     ].join(" "),
-
-    // Legacy-Fallback (nicht im Dropdown): neutraler Studio-Look
     "natural": [
-      "Neutraler Studio-Look mit sanfter Lichtführung, natürliche Farben, präzise, saubere Darstellung.",
-      "Eleganter, unaufdringlicher Hintergrund mit sanftem Verlauf.",
+      "Neutraler Studio-Look mit sanfter Lichtführung, natürliche Farben, sauberer Hintergrundverlauf.",
       identity, comp, quality
     ].join(" "),
   };
+}
+
+// ===== Stil-Normalisierung =====
+const ALLOWED = ["schwarzweiß","neon","steampunk","cinematic","pastell","vintage","highkey","lowkey","natural"];
+function normalizeStyle(s) {
+  if (!s || typeof s !== "string") return null;
+  let v = s.trim().toLowerCase();
+  // Synonyme / Schreibvarianten
+  if (v === "schwarz-weiss" || v === "schwarzweiss" || v === "schwarz weiss" || v === "schwarz-weiß") v = "schwarzweiß";
+  if (v === "high-key" || v === "high key") v = "highkey";
+  if (v === "low-key"  || v === "low key")  v = "lowkey";
+  return v;
 }
 
 export default async function handler(req, res) {
@@ -226,13 +200,19 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST")   return res.status(405).end();
 
+  const DIAG = {}; // sammelt Diagnose-Daten
+
   try {
     const ctype = (req.headers["content-type"] || "").toLowerCase();
-    let sourceBuffer = null, requestedStyles = null, composeMargin = null;
+    let sourceBuffer = null;
+    let composeMargin = null;
 
-    // Zielgröße (OpenAI erlaubt 1024 zuverlässig)
+    // Roh-Stil-Eingaben (für Diagnose)
+    let rawStylesField = null;      // exakt erhaltene Zeichenkette (z. B. '["vintage"]' oder 'vintage')
+    let requestedStyles = null;     // Array (evtl. vor Normalisierung)
+
+    // Zielgröße
     const SIZE = 1024;
-    // Default: 40% Rand je Seite → Motivbreite ~20%
     const COMPOSE_MARGIN_DEFAULT = 0.40;
 
     if (ctype.startsWith("multipart/form-data")) {
@@ -241,19 +221,28 @@ export default async function handler(req, res) {
       const { fields, files } = parseMultipart(await readRawBody(req), m[1]);
       const f = files["file"]; if (!f?.buffer) return res.status(400).json({ error: "No file uploaded" });
       sourceBuffer = f.buffer;
-      // single-style: client sendet ["<stil>"]
-      if (fields["styles"]) { try { const s = JSON.parse(fields["styles"]); if (Array.isArray(s)) requestedStyles = s; } catch {} }
+
+      if (fields["styles"] != null) {
+        rawStylesField = fields["styles"];
+        try { const t = JSON.parse(fields["styles"]); if (Array.isArray(t)) requestedStyles = t; } catch {}
+      } else if (fields["style"] != null) {
+        rawStylesField = fields["style"];
+        requestedStyles = [ String(fields["style"]) ];
+      }
+
       if (fields["compose_margin"] != null) {
         const v = parseFloat(fields["compose_margin"]);
         if (Number.isFinite(v)) composeMargin = v;
       }
-      // custom_text wird ignoriert (Feld entfernt), bleibt abwärtskompatibel
     } else if (ctype.includes("application/json")) {
       const body = JSON.parse((await readRawBody(req)).toString("utf8") || "{}");
       const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/,"");
       if (!b64) return res.status(400).json({ error: "Kein Bild empfangen." });
       sourceBuffer = Buffer.from(b64, "base64");
-      if (Array.isArray(body.styles)) requestedStyles = body.styles;
+
+      if (Array.isArray(body.styles)) { rawStylesField = JSON.stringify(body.styles); requestedStyles = body.styles; }
+      else if (typeof body.style === "string") { rawStylesField = body.style; requestedStyles = [ body.style ]; }
+
       if (body.compose_margin != null) {
         const v = parseFloat(body.compose_margin);
         if (Number.isFinite(v)) composeMargin = v;
@@ -262,35 +251,44 @@ export default async function handler(req, res) {
       return res.status(415).json({ error: "Unsupported Content-Type" });
     }
 
-    // Input auf 1024x1024 normieren (contain, keine Beschneidung)
+    // Diagnose: Rohdaten
+    DIAG.request_styles_sent_raw = rawStylesField ?? null;
+
+    // Normalisieren + validieren
+    let normalized = Array.isArray(requestedStyles) ? requestedStyles.map(normalizeStyle).filter(Boolean) : [];
+    // Duplikate raus
+    normalized = Array.from(new Set(normalized));
+    // Nur erlaubte
+    let filtered = normalized.filter(s => ALLOWED.includes(s));
+
+    // Diagnose
+    DIAG.request_styles_array = normalized;
+    if (filtered.length === 0) {
+      // Kein gültiger Stil → Neon als Fallback
+      filtered = ["neon"];
+      DIAG.fallback_used = true;
+    }
+
+    // Bild vorbereiten
     const inputPng = await sharp(sourceBuffer)
       .resize(SIZE, SIZE, { fit: "contain", background: { r:0,g:0,b:0,alpha:0 } })
       .png()
       .toBuffer();
 
-    // Outpainting-Canvas mit transparenten Randzonen (erzwingt viel Hintergrund)
     const margin = composeMargin == null ? COMPOSE_MARGIN_DEFAULT : composeMargin;
+    DIAG.compose_margin = margin;
+
     const imageForEdit = await makeOutpaintCanvas(inputPng, SIZE, margin);
 
-    // Prompts
     const prompts = buildPrompts();
-
-    // Nur EIN Stil rendern (wie im Frontend gewählt). Fallback = 'neon' (sparsam).
-    const ALLOWED = ["schwarzweiß","neon","steampunk","cinematic","pastell","vintage","highkey","lowkey","natural"]; // natural = legacy
-    const DEFAULT_STYLES = ["neon"];
-    const styles = (requestedStyles && requestedStyles.length)
-      ? requestedStyles.filter(s => ALLOWED.includes(s))
-      : DEFAULT_STYLES;
 
     const previews = {};
     const failed = [];
-
-    for (const style of styles) {
-      await sleep(200 + Math.round(Math.random()*300));
+    for (const style of filtered) {
+      await sleep(150 + Math.round(Math.random()*300));
 
       const form = new FormData();
       form.set("model", "gpt-image-1");
-      // keine Maske senden; die transparenten Flächen dienen effektiv als Outpaint-Bereich
       form.set("image", new File([imageForEdit], "image.png", { type: "image/png" }));
       form.set("prompt", prompts[style] || prompts["natural"] || "");
       form.set("n", "1");
@@ -305,12 +303,24 @@ export default async function handler(req, res) {
       }
     }
 
+    // Diagnose: welche Keys kamen zurück
+    DIAG.upstream_previews_keys = Object.keys(previews);
+    DIAG.upstream_failed = failed;
+
     if (Object.keys(previews).length === 0) {
-      return res.status(502).json({ success: false, error: "Alle Stile fehlgeschlagen.", failed, compose_margin: margin });
+      return res.status(502).json({ success: false, error: "Alle Stile fehlgeschlagen.", diag: DIAG });
     }
-    return res.status(200).json({ success: true, previews, failed, compose_margin: margin });
+
+    return res.status(200).json({
+      success: true,
+      previews,
+      failed,
+      compose_margin: margin,
+      diag: DIAG,
+      version: "PFPX-2025-08b"
+    });
   } catch (err) {
     console.error("generate-fix.js error:", err);
-    return res.status(500).json({ error: "Interner Serverfehler" });
+    return res.status(500).json({ error: "Interner Serverfehler", diag: DIAG || null });
   }
 }
