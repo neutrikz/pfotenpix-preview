@@ -1,17 +1,29 @@
-// /api/generate-fix.js – Outpainting + Single-Style + Diagnose
-// Version: PFPX 2025-08b
+// /api/generate-fix.js – Outpainting + Single-Style + Diagnose-Header (Patch A)
+// Version: PFPX-2025-08c
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 export const config = { api: { bodyParser: false } };
+const VERSION = "PFPX-2025-08c";
 
 // ===== CORS =====
 function applyCORS(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "*");
-  res.setHeader("Access-Control-Expose-Headers", "x-request-id,retry-after");
+  res.setHeader("Access-Control-Expose-Headers", "x-request-id,retry-after,x-pfpx-version,x-pfpx-style-header,x-pfpx-style-query,x-pfpx-style-final,x-pfpx-styles-array");
+}
+
+// ===== Diagnose-Header Setter (NEU) =====
+function setDiagHeaders(res, { styleHeader, styleQuery, normalized, finalStyle, version }) {
+  try {
+    res.setHeader("x-pfpx-version", String(version || VERSION));
+    res.setHeader("x-pfpx-style-header", String(styleHeader || ""));
+    res.setHeader("x-pfpx-style-query", String(styleQuery || ""));
+    res.setHeader("x-pfpx-style-final", String(finalStyle || ""));
+    res.setHeader("x-pfpx-styles-array", JSON.stringify(normalized || []));
+  } catch (_) {}
 }
 
 // ===== Helpers =====
@@ -201,6 +213,20 @@ export default async function handler(req, res) {
   if (req.method !== "POST")   return res.status(405).end();
 
   const DIAG = {}; // sammelt Diagnose-Daten
+  // --- Diagnose: eingehende Header/Query (NEU) ---
+  const styleHeaderRaw = Array.isArray(req.headers["x-pfpx-style"])
+    ? req.headers["x-pfpx-style"][0]
+    : (req.headers["x-pfpx-style"] || req.headers["x-style"] || "");
+  let styleQueryRaw = "";
+  try {
+    // Next.js gibt req.query; Fallback: URL parsen
+    if (req.query && typeof req.query.style !== "undefined") {
+      styleQueryRaw = Array.isArray(req.query.style) ? req.query.style[0] : String(req.query.style || "");
+    } else if (req.url) {
+      const u = new URL(req.url, "http://localhost");
+      styleQueryRaw = u.searchParams.get("style") || "";
+    }
+  } catch (_) {}
 
   try {
     const ctype = (req.headers["content-type"] || "").toLowerCase();
@@ -254,6 +280,16 @@ export default async function handler(req, res) {
     // Diagnose: Rohdaten
     DIAG.request_styles_sent_raw = rawStylesField ?? null;
 
+    // Fallback: Wenn kein Stil im Body kam, nutze ggf. Header oder Query NUR für Diagnose/Tests
+    if ((!requestedStyles || !requestedStyles.length) && styleHeaderRaw) {
+      requestedStyles = [ String(styleHeaderRaw) ];
+      rawStylesField = String(styleHeaderRaw);
+    }
+    if ((!requestedStyles || !requestedStyles.length) && styleQueryRaw) {
+      requestedStyles = [ String(styleQueryRaw) ];
+      rawStylesField = String(styleQueryRaw);
+    }
+
     // Normalisieren + validieren
     let normalized = Array.isArray(requestedStyles) ? requestedStyles.map(normalizeStyle).filter(Boolean) : [];
     // Duplikate raus
@@ -263,8 +299,11 @@ export default async function handler(req, res) {
 
     // Diagnose
     DIAG.request_styles_array = normalized;
+    DIAG.style_header = styleHeaderRaw || "";
+    DIAG.style_query  = styleQueryRaw  || "";
+
     if (filtered.length === 0) {
-      // Kein gültiger Stil → Neon als Fallback
+      // Kein gültiger Stil → Neon als Fallback (wie bisher)
       filtered = ["neon"];
       DIAG.fallback_used = true;
     }
@@ -306,10 +345,29 @@ export default async function handler(req, res) {
     // Diagnose: welche Keys kamen zurück
     DIAG.upstream_previews_keys = Object.keys(previews);
     DIAG.upstream_failed = failed;
+    DIAG.version = VERSION;
+    DIAG.endpoint = req.url || "";
+
+    const finalStyle = (filtered && filtered[0]) || "";
 
     if (Object.keys(previews).length === 0) {
+      setDiagHeaders(res, {
+        styleHeader: styleHeaderRaw,
+        styleQuery:  styleQueryRaw,
+        normalized,
+        finalStyle,
+        version: VERSION
+      });
       return res.status(502).json({ success: false, error: "Alle Stile fehlgeschlagen.", diag: DIAG });
     }
+
+    setDiagHeaders(res, {
+      styleHeader: styleHeaderRaw,
+      styleQuery:  styleQueryRaw,
+      normalized,
+      finalStyle,
+      version: VERSION
+    });
 
     return res.status(200).json({
       success: true,
@@ -317,10 +375,20 @@ export default async function handler(req, res) {
       failed,
       compose_margin: margin,
       diag: DIAG,
-      version: "PFPX-2025-08b"
+      version: VERSION
     });
   } catch (err) {
     console.error("generate-fix.js error:", err);
-    return res.status(500).json({ error: "Interner Serverfehler", diag: DIAG || null });
+    // Versuche auch im Fehlerfall Header mitzugeben
+    try {
+      setDiagHeaders(res, {
+        styleHeader: styleHeaderRaw,
+        styleQuery:  styleQueryRaw,
+        normalized: [],
+        finalStyle: "",
+        version: VERSION
+      });
+    } catch(_) {}
+    return res.status(500).json({ error: "Interner Serverfehler", diag: DIAG || null, version: VERSION });
   }
 }
