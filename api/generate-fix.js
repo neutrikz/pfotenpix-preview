@@ -1,4 +1,5 @@
 // /api/generate-fix.js – Outpainting-Canvas (transparente Ränder) + strenger Kompositions-Prompt
+// Version: PFPX 2025-08 – Single-Style Rendering mit 8 DE-Stilen (inkl. Legacy 'natural'-Fallback)
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
@@ -126,44 +127,98 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
   return canvas; // Transparente Randzonen → Modell outpaintet Hintergrund
 }
 
-// ===== Prompts – streng: Motiv max. 20–25 %, viel negativer Raum =====
-function buildPrompts(userText) {
-  const comp = [
-    "Composition: subject strictly centered and fully visible.",
-    "The subject must occupy at most 20–25% of the canvas width and height; leave ≈40% empty margin on every side.",
-    "Do not zoom in; do not tightly crop; no frames or borders.",
-    "Background must be coherent and smoothly extended from the original scene (no hard seams).",
-    "Design so the image also works when cropped in portrait or landscape later."
-  ].join(" ");
+// ===== Prompts – 8 Stile (DE), streng: Motiv max. 20–25 %, viel negativer Raum =====
+function buildPrompts() {
+  const comp =
+    "Komposition: Motiv strikt mittig und vollständig sichtbar. " +
+    "Das Tier belegt höchstens 20–25% der Bildbreite und -höhe; lasse etwa 40% negativen Raum auf jeder Seite. " +
+    "Nicht heranzoomen; kein enger Beschnitt; keine Rahmen oder Bordüren. " +
+    "Hintergrund nahtlos und kohärent aus der Originalszene heraus erweitern (Outpainting ohne harte Kanten). " +
+    "Das Bild soll auch nachträgliche Hoch- oder Querformat-Crops gut verkraften.";
 
-  const guardrails = [
-    "This is the same real pet; preserve exact identity, anatomy and markings.",
-    "Keep proportions and facial structure unchanged; no cartoonification; artifact-free, print-grade quality.",
-    comp
-  ].join(" ");
+  const identity =
+    "Gleiches reales Haustier; Identität, Fellzeichnung und Anatomie exakt beibehalten. " +
+    "Proportionen und Gesichtsstruktur unverändert; keine Accessoires hinzufügen; keine Cartoonisierung. " +
+    "Keine zusätzlichen Gliedmaßen oder Merkmale; keine Texte oder Logos. " +
+    "Schnurrhaare, Augen, Nase und Fellstruktur scharf und natürlich, ohne Artefakte.";
 
-  const nat = [
-    "High-end studio portrait retouch, premium magazine quality.",
-    "Soft diffused key light with subtle rim; refined micro-contrast; elegant neutral backdrop with smooth falloff.",
-    guardrails,
-    userText ? `If text is provided, integrate it small and tasteful: "${userText}".` : ""
-  ].join(" ");
+  const quality =
+    "Drucktaugliche Studioqualität, saubere Kanten, feines natürliches Bokeh, fotorealistisch, sRGB. " +
+    "Sanfte lokale Tonwertsteuerung (Dodge & Burn) nur zur Betonung der natürlichen Details.";
 
-  const bw = [
-    "Fine-art black and white conversion (true grayscale).",
-    "Deep blacks, controlled highlights, rich midtones; delicate film grain; crisp whiskers and eyes.",
-    guardrails,
-    userText ? `If text is provided, render it subtle and monochrome: "${userText}".` : ""
-  ].join(" ");
+  return {
+    // 1) Schwarzweiß – extrem edel
+    "schwarzweiß": [
+      "Edles Fine-Art-Schwarzweiß-Porträt mit echter Neutralität (keine Farbstiche).",
+      "Tiefe, samtige Schwarztöne mit klarer Zeichnung; fein abgestufte Mitteltöne und kontrollierte, nicht ausgefressene Lichter.",
+      "Sehr feines analoges Korn; mikrofeine Kontrastakzente um Augen, Nase und Maul; weiches, hochwertiges Licht mit sanftem Verlauf.",
+      "Leichte, geschmackvolle Vignette zur Motivführung – niemals auf dem Tier blockierend.",
+      identity, comp, quality
+    ].join(" "),
 
-  const neon = [
-    "Neon pop-art styling while preserving the exact pet identity and silhouette.",
-    "Cyan, magenta and orange rim-light accents; smooth neon gradients with gentle halation on a dark backdrop.",
-    guardrails,
-    userText ? `Add matching neon typography, very small and tasteful: "${userText}".` : ""
-  ].join(" ");
+    // 2) Neon – Pop-Rimlight, edel
+    "neon": [
+      "Neon-Pop-Look mit subtilen Rim-Lights in Cyan, Magenta und Orange auf dunklem, sanft verlaufendem Hintergrund.",
+      "Weiche Neon-Verläufe mit leichter Halation; Reflexe dezent, ohne das Fell unnatürlich einzufärben.",
+      "Hohe Klarheit an Augen und Schnurrhaaren; edle, moderne Studioanmutung.",
+      identity, comp, quality
+    ].join(" "),
 
-  return { natural: nat, "schwarzweiß": bw, neon };
+    // 3) Steampunk – warmes Messing, ohne Props
+    "steampunk": [
+      "Warmer Steampunk-Look: tonale Palette aus Messing, Kupfer und dunklem Holz; ein Hauch von industriellem Bokeh (Zahnräder/Ornamente) nur im Hintergrund, unscharf.",
+      "Warmes Wolfram-Licht, dezente Rauch-/Dunststimmung; kein Kitsch, keine Requisiten am Tier.",
+      "Fokus bleibt auf dem Tier; Hintergrund nur als stimmige Bühne.",
+      identity, comp, quality
+    ].join(" "),
+
+    // 4) Cinematic – filmischer Look (Deutsch)
+    "cinematic": [
+      "Filmischer Porträt-Look mit sanfter Teal-/Orange-Gradierung: kühle Schatten, warme Highlights, sehr feines Filmkorn.",
+      "Zarte anamorph wirkende Bokeh-Lichter im Hintergrund; minimaler Lens-Bloom; dezente Vignette zur Motivführung.",
+      "Kontrastkurve filmisch, aber natürlich – Fellfarben glaubwürdig, Augen lebendig.",
+      identity, comp, quality
+    ].join(" "),
+
+    // 5) Pastell – minimal, matt, airy
+    "pastell": [
+      "Minimalistischer Pastell-Look: matte, cremige Hintergrundverläufe (Sage/Sand/Blush) mit sehr weichem, diffusen Licht.",
+      "Zurückhaltende Sättigung, luftige Helligkeit; sanfte Schatten, keine harten Kanten.",
+      "Elegante, helle Studiowirkung ohne Plastik- oder Kaugummi-Effekt.",
+      identity, comp, quality
+    ].join(" "),
+
+    // 6) Vintage – dezent, hochwertig
+    "vintage": [
+      "Hochwertiger Vintage-Look: subtil warmer Elfenbein-/Sepia-Ton, feines analoges Korn, sehr leichte Halation an Spitzlichtern.",
+      "Hauch von Papier-/Druckcharakter nur im Hintergrund (dezent, niemals auf dem Tier); sanfte Vignette.",
+      "Zeitlos, geschmackvoll – keine künstlichen Kratzer oder stark gealterten Artefakte.",
+      identity, comp, quality
+    ].join(" "),
+
+    // 7) Highkey – hell, klar, ohne Clipping
+    "highkey": [
+      "Helles High-Key-Porträt auf beinahe weißem Hintergrund, breite weiche Lichtquellen, sehr sanfte Schatten.",
+      "Keine ausgefressenen Highlights – Zeichnung in hellen Fellpartien bewahren; klare Konturen, lebendige Augen.",
+      "Sauber, modern, luftig; trotzdem feine Mikrostruktur im Fell erhalten.",
+      identity, comp, quality
+    ].join(" "),
+
+    // 8) Lowkey – tief, dramatisch, mit Zeichnung
+    "lowkey": [
+      "Dramatisches Low-Key-Porträt auf tiefem Graphit-/Schwarz-Hintergrund mit gerichteter Lichtführung (Rembrandt-/Edge-Light-Charakter).",
+      "Tiefe Schwarztöne mit Zeichnung, sanfte Glanzlichter auf Fellkanten, deutliches aber elegantes Licht-/Schatten-Modelling.",
+      "Stimmungsvoll, ohne das Tier im Schwarz versinken zu lassen.",
+      identity, comp, quality
+    ].join(" "),
+
+    // Legacy-Fallback (nicht im Dropdown): neutraler Studio-Look
+    "natural": [
+      "Neutraler Studio-Look mit sanfter Lichtführung, natürliche Farben, präzise, saubere Darstellung.",
+      "Eleganter, unaufdringlicher Hintergrund mit sanftem Verlauf.",
+      identity, comp, quality
+    ].join(" "),
+  };
 }
 
 export default async function handler(req, res) {
@@ -173,7 +228,7 @@ export default async function handler(req, res) {
 
   try {
     const ctype = (req.headers["content-type"] || "").toLowerCase();
-    let sourceBuffer = null, userText = "", requestedStyles = null, composeMargin = null;
+    let sourceBuffer = null, requestedStyles = null, composeMargin = null;
 
     // Zielgröße (OpenAI erlaubt 1024 zuverlässig)
     const SIZE = 1024;
@@ -186,18 +241,18 @@ export default async function handler(req, res) {
       const { fields, files } = parseMultipart(await readRawBody(req), m[1]);
       const f = files["file"]; if (!f?.buffer) return res.status(400).json({ error: "No file uploaded" });
       sourceBuffer = f.buffer;
-      userText = (fields["custom_text"] || fields["text"] || "").toString();
+      // single-style: client sendet ["<stil>"]
       if (fields["styles"]) { try { const s = JSON.parse(fields["styles"]); if (Array.isArray(s)) requestedStyles = s; } catch {} }
       if (fields["compose_margin"] != null) {
         const v = parseFloat(fields["compose_margin"]);
         if (Number.isFinite(v)) composeMargin = v;
       }
+      // custom_text wird ignoriert (Feld entfernt), bleibt abwärtskompatibel
     } else if (ctype.includes("application/json")) {
       const body = JSON.parse((await readRawBody(req)).toString("utf8") || "{}");
       const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/,"");
       if (!b64) return res.status(400).json({ error: "Kein Bild empfangen." });
       sourceBuffer = Buffer.from(b64, "base64");
-      userText = body.userText || "";
       if (Array.isArray(body.styles)) requestedStyles = body.styles;
       if (body.compose_margin != null) {
         const v = parseFloat(body.compose_margin);
@@ -217,12 +272,12 @@ export default async function handler(req, res) {
     const margin = composeMargin == null ? COMPOSE_MARGIN_DEFAULT : composeMargin;
     const imageForEdit = await makeOutpaintCanvas(inputPng, SIZE, margin);
 
-    const prompts = buildPrompts(userText);
+    // Prompts
+    const prompts = buildPrompts();
 
-    // ⚠️ TEMPORÄR: Nur NEON generieren, um Credits zu sparen.
-    // Für Livebetrieb wieder DEFAULT_STYLES = ['natural','schwarzweiß','neon'] setzen.
-    const DEFAULT_STYLES = ['neon'];
-    const ALLOWED = ['natural','schwarzweiß','neon'];
+    // Nur EIN Stil rendern (wie im Frontend gewählt). Fallback = 'neon' (sparsam).
+    const ALLOWED = ["schwarzweiß","neon","steampunk","cinematic","pastell","vintage","highkey","lowkey","natural"]; // natural = legacy
+    const DEFAULT_STYLES = ["neon"];
     const styles = (requestedStyles && requestedStyles.length)
       ? requestedStyles.filter(s => ALLOWED.includes(s))
       : DEFAULT_STYLES;
@@ -231,13 +286,13 @@ export default async function handler(req, res) {
     const failed = [];
 
     for (const style of styles) {
-      await sleep(250 + Math.round(Math.random()*400));
+      await sleep(200 + Math.round(Math.random()*300));
 
       const form = new FormData();
       form.set("model", "gpt-image-1");
       // keine Maske senden; die transparenten Flächen dienen effektiv als Outpaint-Bereich
       form.set("image", new File([imageForEdit], "image.png", { type: "image/png" }));
-      form.set("prompt", prompts[style] || "");
+      form.set("prompt", prompts[style] || prompts["natural"] || "");
       form.set("n", "1");
       form.set("size", "1024x1024");
 
