@@ -1,5 +1,5 @@
-// /api/generate-fix.js – Outpainting + Single-Style + Diagnose (Revert to previous logic, ASCII-safe)
-// Version: PFPX 2025-08b-revert
+// /api/generate-fix.js – Outpainting + Single-Style + Diagnose
+// Version: PFPX 2025-08b
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
@@ -7,8 +7,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 export const config = { api: { bodyParser: false } };
 
 // ===== CORS =====
-function applyCORS(res) {
-  // Nur ASCII-Header verwenden; KEIN Style-Header im Response.
+function applyCORS(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "*");
@@ -67,7 +66,7 @@ function extractUrlOrDataUri(json) {
   return null;
 }
 
-async function fetchOpenAIWithRetry(form, _styleName, { retries = 4, baseDelayMs = 1000 } = {}) {
+async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs = 1000 } = {}) {
   let lastError = null;
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -197,7 +196,7 @@ function normalizeStyle(s) {
 }
 
 export default async function handler(req, res) {
-  applyCORS(res);
+  applyCORS(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST")   return res.status(405).end();
 
@@ -318,7 +317,7 @@ export default async function handler(req, res) {
       failed,
       compose_margin: margin,
       diag: DIAG,
-      version: "PFPX-2025-08b-revert"
+      version: "PFPX-2025-08b"
     });
   } catch (err) {
     console.error("generate-fix.js error:", err);
