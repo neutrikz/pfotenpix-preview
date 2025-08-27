@@ -142,48 +142,60 @@ function buildPrompts() {
   const comp =
     "Komposition: Motiv strikt mittig und vollständig sichtbar. Das Tier belegt höchstens 20–25% der Bildbreite und -höhe; lasse etwa 40% negativen Raum auf jeder Seite. Nicht heranzoomen; kein enger Beschnitt; keine Rahmen. Hintergrund nahtlos erweitern. Für spätere Crops geeignet.";
   const identity =
-    "Es ist exakt dasselbe reale Haustier wie auf der Vorlage. Übernimm Fellfarbe, Fellzeichnung/Muster und charakteristische Abzeichen präzise. Form und Breite der weißen Brustpartie sowie der Stirn-/Nasenblesse exakt beibehalten – inklusive kleiner Asymmetrien (keine Symmetrisierung). Proportionen von Kopf, Fang und Ohren unverändert lassen; keine künstliche Aufplusterung des Fells. Augenfarbe und -form exakt wie in der Vorlage; keine Heterochromie, kein Glow. Keine Accessoires, keine Cartoonisierung, keine Typografie/Logos, keine zusätzlichen Vordergrundobjekte.";
+    "Es ist exakt dasselbe reale Haustier wie auf der Vorlage. Übernimm Fellfarbe, Fellzeichnung/Muster und charakteristische Abzeichen präzise. Augenfarbe und -form unverändert übernehmen; Nase, Schnauze, Ohren und Schnurrhaare bleiben identisch. Die Körperhaltung darf variieren, die Identität bleibt gleich. Keine Accessoires, keine Cartoonisierung, keine Typografie/Logos, keine zusätzlichen Vordergrundobjekte.";
   const fidelity =
-    "Keine Halluzinationen: keine neuen Muster oder Farbverschiebungen, keine Umfärbung des Fells, keine Veränderung der Gesichtsproportionen, keine Vergrößerung der Augen, keine übermäßige Glättung. Stil-Effekte nur als Licht/Gradierung anwenden – keine globale Re-Coloration der Fell-Albedo. Alle natürlichen Details und die realistische Textur bewahren.";
+    "Keine Halluzinationen: keine neuen Muster oder Farbverschiebungen, keine Umfärbung des Fells, keine Veränderung der Gesichtsproportionen, keine übermäßige Glättung. Stil-Effekte nur als Licht/Gradierung anwenden – keine globale Re-Coloration der Fell-Albedo. Bewahre alle natürlichen Details und die realistische Textur.";
   const quality =
     "Drucktaugliche Studioqualität, saubere Kanten, fotorealistisch, sRGB, sanfte lokale Tonwertsteuerung.";
+
+  // Spezielle Lockerung NUR für Neon (Gels dürfen Mitteltöne färben, Muster bleibt lesbar)
+  const neon_loosen =
+    "Ausnahme Neon: farbige Gel-Lichter (Cyan/Blau und Magenta/Orange) dürfen das Fell deutlich einfärben – auch in Mitteltönen –, jedoch bleiben Fellmuster, charakteristische Abzeichen und Helligkeitsverhältnisse klar erkennbar; keine flächige Monochrom-Färbung oder Comic-Ästhetik.";
 
   return {
     "neon": [
       "Kräftiger Neon-Look: deutliche, farbintensive Rim-Lights in Cyan (links) und Magenta/Orange (rechts); dunkler Hintergrundverlauf mit sanfter Halation an Kanten.",
-      "Neon wirkt ADDITIV (Screen) auf Kanten und Konturen und übertönt NICHT die natürliche Fellfarbe in Mitteltönen. Die weiße Brust bleibt optisch weiß; farbige Säume nur an den Rändern (max. ~20% Deckung). Gesicht klar, Augenfarbe bleibt original; Catchlights dürfen farbige Reflexe zeigen.",
-      identity, fidelity, comp, quality
+      "Neon wirkt ADDITIV (Screen) auf Kanten und Konturen. Mitteltöne dürfen sichtbar farbig getönt sein; die weiße Brust bleibt lesbar hell/neutral, keine Überstrahlung. Gesicht klar modelliert; Augenfarbe original, Catchlights dürfen farbige Reflexe zeigen.",
+      neon_loosen, identity, comp, quality
+      // WICHTIG: 'fidelity' hier bewusst NICHT anhängen, damit die Neon-Lockerung greift.
     ].join(" "),
+
     "steampunk": [
       "Warmer Steampunk-Look: Messing/Kupfer/Dunkelholz-Palette; industrielles Bokeh nur im Hintergrund, unscharf.",
       "Warmes Wolfram-Licht, dezenter Dunst; kein Kitsch, keine Requisiten am Tier; Fokus bleibt auf dem Tier.",
       identity, fidelity, comp, quality
     ].join(" "),
+
     "cinematic": [
       "Filmischer Look mit sanfter Teal/Orange-Gradierung, feinem Filmkorn und dezenten anamorph wirkenden Bokeh-Lichtern.",
       "Kontrast filmisch aber natürlich; Fellfarben realistisch (nicht umgefärbt), Augen lebendig; leichte Vignette.",
       identity, fidelity, comp, quality
     ].join(" "),
+
     "pastell": [
       "Eleganter Pastell-Look: matte, cremige Hintergrundverläufe (Sage/Sand/Blush) mit sehr weichem, diffusem Licht.",
       "Zurückhaltende Sättigung im Hintergrund, luftige Helligkeit; Fellfarben des Tiers unverändert.",
       identity, fidelity, comp, quality
     ].join(" "),
+
     "vintage": [
       "Zeitloser Vintage-Look: subtil warmer Elfenbein-/leichter Sepia-Ton, feines analoges Grain, sanfte Halation.",
       "Papier-/Druckcharakter nur im Hintergrund; leichte Vignette. Fell nicht umgefärbt.",
       identity, fidelity, comp, quality
     ].join(" "),
+
     "highkey": [
       "Helles High-Key-Porträt auf fast weißem Hintergrund mit großen weichen Lichtquellen, sehr sanfte Schatten.",
       "Keine ausgefressenen Highlights; Konturen und Fellzeichnung klar, moderne luftige Studiowirkung.",
       identity, fidelity, comp, quality
     ].join(" "),
+
     "lowkey": [
       "Dramatisches Low-Key-Porträt auf tiefem Graphit/Schwarz mit gerichteter Lichtführung (Edge-/Rembrandt-Licht).",
-      "Subjekt bewusst heller als klassisches Low-Key (≈ +0,7 EV): Gesicht und Brust vollständig durchgezeichnet; feine Textur im Fell, klare Silhouette gegen den dunklen Hintergrund; keine abgesoffenen Schatten.",
+      "Das Tier ist deutlich heller als der Hintergrund: Gesicht und Brust gut lesbar, feine Zeichnung im Fell, sanfte Glanzlichter an Kanten; keine Silhouette, keine abgesoffenen Schatten.",
       identity, fidelity, comp, quality
     ].join(" "),
+
     "natural": [
       "Neutraler Studio-Look mit sanfter Lichtführung und sauberem Hintergrundverlauf.",
       "Farben und Muster exakt wie im Original, natürlich und ausgewogen.",
@@ -191,6 +203,7 @@ function buildPrompts() {
     ].join(" "),
   };
 }
+
 
 
 // ===== Stil-Normalisierung =====
