@@ -145,14 +145,14 @@ function buildPrompts() {
   const identity =
     "Es ist exakt dasselbe reale Haustier wie auf der Vorlage. Übernimm Fellfarbe, Fellzeichnung/Muster und charakteristische Abzeichen präzise. Augenfarbe und -form unverändert übernehmen; Nase, Schnauze, Ohren und Schnurrhaare bleiben identisch. Die Körperhaltung darf variieren, die Identität bleibt gleich. Keine Accessoires, keine Cartoonisierung, keine Typografie/Logos, keine zusätzlichen Vordergrundobjekte.";
   const fidelity =
-    "Keine Halluzinationen: keine neuen Muster/Farbverschiebungen, keine Umfärbung des Fells, keine Veränderung der Gesichtsproportionen, keine übermäßige Glättung. Bewahre die natürlichen Details und die realistische Textur.";
+    "Keine Halluzinationen: keine neuen Muster oder Farbverschiebungen, keine Umfärbung des Fells, keine Veränderung der Gesichtsproportionen, keine übermäßige Glättung. Stil-Effekte nur als Licht/Gradierung anwenden – keine globale Re-Coloration der Fell-Albedo. Bewahre alle natürlichen Details und die realistische Textur.";
   const quality =
     "Drucktaugliche Studioqualität, saubere Kanten, fotorealistisch, sRGB, sanfte lokale Tonwertsteuerung.";
 
   return {
     "neon": [
-      "Neon-Pop-Look mit subtilen Rim-Lights in Cyan, Magenta und Orange auf dunklem Verlauf.",
-      "Rim-Lights sind additiv: Sie betonen Kanten und Konturen, übertönen aber NICHT die Basisfellfarbe. Weiche Neon-Verläufe, leichte Halation, hohe Klarheit an Augen/Schnurrhaaren, moderne Studioanmutung.",
+      "Kräftiger Neon-Look: deutlich sichtbare Rim-Lights in Cyan (links) und Magenta (rechts), optional subtile Orange-Akzente; dunkler Hintergrundverlauf, leichte Halation an Kanten.",
+      "Neon wirkt als LICHT auf Kanten und Konturen und übertönt NICHT die natürliche Fellfarbe. Gesicht und Brust klar erkennbar; Augenfarbe bleibt original, Catchlights dürfen farbige Reflexe zeigen.",
       identity, fidelity, comp, quality
     ].join(" "),
     "steampunk": [
@@ -161,36 +161,38 @@ function buildPrompts() {
       identity, fidelity, comp, quality
     ].join(" "),
     "cinematic": [
-      "Filmischer Look mit sanfter Teal/Orange-Gradierung, feines Filmkorn, dezente anamorphe Bokeh-Lichter.",
-      "Kontrast filmisch aber natürlich; Fellfarben glaubwürdig, Augen lebendig, leichte Vignette.",
+      "Filmischer Look mit sanfter Teal/Orange-Gradierung, feinem Filmkorn und dezenten anamorph wirkenden Bokeh-Lichtern.",
+      "Kontrast filmisch aber natürlich; Fellfarben realistisch (nicht umgefärbt), Augen lebendig; leichte Vignette.",
       identity, fidelity, comp, quality
     ].join(" "),
     "pastell": [
-      "Minimaler Pastell-Look: matte, cremige Hintergrundverläufe (Sage/Sand/Blush) mit sehr weichem, diffusem Licht.",
-      "Zurückhaltende Sättigung, luftige Helligkeit, elegante helle Studiowirkung.",
+      "Eleganter Pastell-Look: matte, cremige Hintergrundverläufe (Sage/Sand/Blush) mit sehr weichem, diffusem Licht.",
+      "Zurückhaltende Sättigung im Hintergrund, luftige Helligkeit; Fellfarben des Tiers unverändert.",
       identity, fidelity, comp, quality
     ].join(" "),
     "vintage": [
-      "Hochwertiger Vintage-Look: subtil warmer Elfenbein-/Sepia-Ton, feines analoges Korn, leichte Halation.",
-      "Hauch von Papier-/Druckcharakter nur im Hintergrund, sanfte Vignette, zeitlos und geschmackvoll.",
+      "Zeitloser Vintage-Look: subtil warmer Elfenbein-/leichter Sepia-Ton, feines analoges Grain, sanfte Halation.",
+      "Papier-/Druckcharakter nur im Hintergrund; leichte Vignette. Fell nicht umgefärbt.",
       identity, fidelity, comp, quality
     ].join(" "),
     "highkey": [
-      "Helles High-Key-Porträt auf fast weißem Hintergrund, breite weiche Lichtquellen, sehr sanfte Schatten.",
-      "Keine ausgefressenen Highlights; klare Konturen, lebendige Augen; sauber, modern, luftig.",
+      "Helles High-Key-Porträt auf fast weißem Hintergrund mit großen weichen Lichtquellen, sehr sanfte Schatten.",
+      "Keine ausgefressenen Highlights; Konturen und Fellzeichnung klar, moderne luftige Studiowirkung.",
       identity, fidelity, comp, quality
     ].join(" "),
     "lowkey": [
-      "Dramatisches Low-Key-Porträt auf tiefem Graphit/Schwarz, gerichtete Lichtführung (Edge-/Rembrandt-Licht).",
-      "Tiefe Schwarztöne MIT Zeichnung, sanfte Glanzlichter an Fellkanten; stimmungsvoll ohne Absaufen.",
+      "Dramatisches Low-Key-Porträt auf tiefem Graphit/Schwarz mit gerichteter Lichtführung (Edge-/Rembrandt-Licht).",
+      "Das Tier ist deutlich heller als der Hintergrund: Gesicht und Brust gut lesbar, feine Zeichnung im Fell, sanfte Glanzlichter an Kanten; keine Silhouette, keine abgesoffenen Schatten.",
       identity, fidelity, comp, quality
     ].join(" "),
     "natural": [
-      "Neutraler Studio-Look mit sanfter Lichtführung, natürliche Farben, sauberer Hintergrundverlauf.",
+      "Neutraler Studio-Look mit sanfter Lichtführung und sauberem Hintergrundverlauf.",
+      "Farben und Muster exakt wie im Original, natürlich und ausgewogen.",
       identity, fidelity, comp, quality
     ].join(" "),
   };
 }
+
 
 // ===== Stil-Normalisierung =====
 const ALLOWED = ["neon","steampunk","cinematic","pastell","vintage","highkey","lowkey","natural"];
