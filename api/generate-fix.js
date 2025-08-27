@@ -143,65 +143,61 @@ function buildPrompts() {
   const comp =
     "Komposition: Motiv strikt mittig und vollständig sichtbar. Das Tier belegt höchstens 20–25% der Bildbreite und -höhe; lasse etwa 40% negativen Raum auf jeder Seite. Nicht heranzoomen; kein enger Beschnitt; keine Rahmen. Hintergrund nahtlos erweitern. Für spätere Crops geeignet.";
   const identity =
-    "Gleiches reales Haustier; Identität, Fellzeichnung und Anatomie exakt beibehalten. Keine Accessoires, keine Cartoonisierung. Schnurrhaare, Augen, Nase und Fellstruktur scharf und natürlich.";
+    "Es ist exakt dasselbe reale Haustier wie auf der Vorlage. Übernimm Fellfarbe, Fellzeichnung/Muster und charakteristische Abzeichen präzise. Augenfarbe und -form unverändert übernehmen; Nase, Schnauze, Ohren und Schnurrhaare bleiben identisch. Die Körperhaltung darf variieren, die Identität bleibt gleich. Keine Accessoires, keine Cartoonisierung, keine Typografie/Logos, keine zusätzlichen Vordergrundobjekte.";
+  const fidelity =
+    "Keine Halluzinationen: keine neuen Muster/Farbverschiebungen, keine Umfärbung des Fells, keine Veränderung der Gesichtsproportionen, keine übermäßige Glättung. Bewahre die natürlichen Details und die realistische Textur.";
   const quality =
     "Drucktaugliche Studioqualität, saubere Kanten, fotorealistisch, sRGB, sanfte lokale Tonwertsteuerung.";
 
   return {
-    "schwarzweiß": [
-      "Edles Fine-Art-Schwarzweiß-Porträt: echte Neutralität, tiefe Schwarztöne, fein abgestufte Mitteltöne, kontrollierte Lichter.",
-      "Feines analoges Korn, Mikro-Kontrast um Augen/Nase/Maul; hochwertiges, weiches Licht, dezente Vignette (nicht aufs Tier).",
-      identity, comp, quality
-    ].join(" "),
     "neon": [
       "Neon-Pop-Look mit subtilen Rim-Lights in Cyan, Magenta und Orange auf dunklem Verlauf.",
-      "Weiche Neon-Verläufe, leichte Halation, hohe Klarheit an Augen/Schnurrhaaren, moderne Studioanmutung.",
-      identity, comp, quality
+      "Rim-Lights sind additiv: Sie betonen Kanten und Konturen, übertönen aber NICHT die Basisfellfarbe. Weiche Neon-Verläufe, leichte Halation, hohe Klarheit an Augen/Schnurrhaaren, moderne Studioanmutung.",
+      identity, fidelity, comp, quality
     ].join(" "),
     "steampunk": [
       "Warmer Steampunk-Look: Messing/Kupfer/Dunkelholz-Palette; industrielles Bokeh nur im Hintergrund, unscharf.",
       "Warmes Wolfram-Licht, dezenter Dunst; kein Kitsch, keine Requisiten am Tier; Fokus bleibt auf dem Tier.",
-      identity, comp, quality
+      identity, fidelity, comp, quality
     ].join(" "),
     "cinematic": [
       "Filmischer Look mit sanfter Teal/Orange-Gradierung, feines Filmkorn, dezente anamorphe Bokeh-Lichter.",
       "Kontrast filmisch aber natürlich; Fellfarben glaubwürdig, Augen lebendig, leichte Vignette.",
-      identity, comp, quality
+      identity, fidelity, comp, quality
     ].join(" "),
     "pastell": [
       "Minimaler Pastell-Look: matte, cremige Hintergrundverläufe (Sage/Sand/Blush) mit sehr weichem, diffusem Licht.",
       "Zurückhaltende Sättigung, luftige Helligkeit, elegante helle Studiowirkung.",
-      identity, comp, quality
+      identity, fidelity, comp, quality
     ].join(" "),
     "vintage": [
       "Hochwertiger Vintage-Look: subtil warmer Elfenbein-/Sepia-Ton, feines analoges Korn, leichte Halation.",
       "Hauch von Papier-/Druckcharakter nur im Hintergrund, sanfte Vignette, zeitlos und geschmackvoll.",
-      identity, comp, quality
+      identity, fidelity, comp, quality
     ].join(" "),
     "highkey": [
       "Helles High-Key-Porträt auf fast weißem Hintergrund, breite weiche Lichtquellen, sehr sanfte Schatten.",
       "Keine ausgefressenen Highlights; klare Konturen, lebendige Augen; sauber, modern, luftig.",
-      identity, comp, quality
+      identity, fidelity, comp, quality
     ].join(" "),
     "lowkey": [
       "Dramatisches Low-Key-Porträt auf tiefem Graphit/Schwarz, gerichtete Lichtführung (Edge-/Rembrandt-Licht).",
       "Tiefe Schwarztöne MIT Zeichnung, sanfte Glanzlichter an Fellkanten; stimmungsvoll ohne Absaufen.",
-      identity, comp, quality
+      identity, fidelity, comp, quality
     ].join(" "),
     "natural": [
       "Neutraler Studio-Look mit sanfter Lichtführung, natürliche Farben, sauberer Hintergrundverlauf.",
-      identity, comp, quality
+      identity, fidelity, comp, quality
     ].join(" "),
   };
 }
 
 // ===== Stil-Normalisierung =====
-const ALLOWED = ["schwarzweiß","neon","steampunk","cinematic","pastell","vintage","highkey","lowkey","natural"];
+const ALLOWED = ["neon","steampunk","cinematic","pastell","vintage","highkey","lowkey","natural"];
 function normalizeStyle(s) {
   if (!s || typeof s !== "string") return null;
   let v = s.trim().toLowerCase();
   // Synonyme / Schreibvarianten
-  if (v === "schwarz-weiss" || v === "schwarzweiss" || v === "schwarz weiss" || v === "schwarz-weiß") v = "schwarzweiß";
   if (v === "high-key" || v === "high key") v = "highkey";
   if (v === "low-key"  || v === "low key")  v = "lowkey";
   return v;
