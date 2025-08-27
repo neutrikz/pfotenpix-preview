@@ -142,6 +142,10 @@ function buildPrompts() {
   const comp =
     "Komposition: Motiv strikt mittig und vollständig sichtbar. Das Tier belegt höchstens 20–25% der Bildbreite und -höhe; lasse etwa 40% negativen Raum auf jeder Seite. Nicht heranzoomen; kein enger Beschnitt; keine Rahmen. Hintergrund nahtlos erweitern. Für spätere Crops geeignet.";
 
+  // Sonder-Komposition NUR für Neon (Portrait/Anschnitt erlaubt)
+  const compNeon =
+    "Komposition (Neon): Portrait/Brustbild mit Fokus auf Kopf und Oberkörper. Das Motiv darf 35–50% der Bildbreite/-höhe füllen; Beine/Pfoten dürfen angeschnitten sein. Gesicht mittig, Augen ungefähr im oberen Drittel. Hintergrund bleibt nahtlos und clean.";
+
   const recognizability =
     "Erkennbarkeit: Es ist eindeutig dasselbe reale Haustier wie auf der Vorlage. Fellfarbe und -zeichnung, charakteristische Abzeichen und Gesichtsmerkmale bleiben erhalten. Augenfarbe/-form, Nase, Schnauze, Ohren und Schnurrhaare bleiben wiedererkennbar. Körperhaltung darf variieren. Keine Accessoires, keine Cartoonisierung, keine Typografie/Logos, keine neuen Vordergrundobjekte.";
 
@@ -153,14 +157,14 @@ function buildPrompts() {
 
   return {
     "neon": [
-      "Cyberpunk-Neon-Studio: kräftige, farbsatte Rim-Lights – links Cyan/Blau, rechts Magenta/Pink mit warmem Orange-Saum; tiefer Indigo→Violett-Hintergrund, deutliche Halation/Glow.",
-      "Neon wirkt ADDITIV (Screen): Highlights und Schatten dürfen stark einfärben; Mitteltöne behalten die natürliche Fell-Albedo. Die weiße Brust bleibt optisch weiß; farbige Säume nur an Kanten (ca. 10–25% Breite).",
-      "Hohe Mikrokontraste an Fellkanten/Schnurrhaaren, kein Oversoften.",
-      recognizability, stylize, comp, quality
+      "Cyberpunk-Neon-Studio: SEHR kräftige additive Rim-Lights – links Cyan/Türkis, rechts Magenta/Pink mit warmem Orange-Kicker. Dunkler Indigo→Violett-Verlaufshintergrund mit sichtbarer Halation/Glow und leichter atmosphärischer Nebel-Textur.",
+      "Neon wirkt ADDITIV (Screen/Lighten): Kanten/Highlights dürfen stark einfärben und leicht „wrappen“. Mitteltöne der Fell-Albedo bleiben erkennbar; die weiße Brust bleibt optisch weiß/creme. Farbige Säume an Kanten dürfen 10–25% der Körperbreite einnehmen.",
+      "Gesicht hell und klar, Augen glasig mit farbigen Reflexen/Catchlights; hohe Mikrokontraste an Fellkanten und Schnurrhaaren, kein Oversoften.",
+      compNeon, recognizability, stylize, quality
     ].join(" "),
 
     "steampunk": [
-      "Warmer Steampunk-Look: Messing/Kupfer/Dunkelholz-Palette, industr. Bokeh und dezente Schwebstaub-/Dunst-Atmosphäre im HINTERGRUND.",
+      "Warmer Steampunk-Look: Messing/Kupfer/Dunkelholz-Palette; industrielles Bokeh und dezente Dunst-Atmosphäre nur im Hintergrund.",
       "Licht wie Wolfram/Glühlampe mit warmem Key und kühlerem Gegenlicht; sanfter Bloom/Halation.",
       "Stilisierung deutlich spürbar, aber ohne Umfärben der Mitteltöne des Fells.",
       recognizability, stylize, comp, quality
@@ -182,7 +186,7 @@ function buildPrompts() {
 
     "vintage": [
       "Zeitloser Vintage-Look: elfenbein/leichter Sepia-Ton, feines analoges Grain, sanfte Halation.",
-      "Leichte Papier-/Fasertextur NUR im Hintergrund; glaubwürdige Haut-/Fellfarben im Motiv ohne harte Umfärbung.",
+      "Leichte Papier-/Fasertextur NUR im Hintergrund; glaubwürdige Fellfarben im Motiv ohne harte Umfärbung.",
       "Behutsame Vignette, zarte Kontrast-S-Kurve.",
       recognizability, stylize, comp, quality
     ].join(" "),
@@ -206,6 +210,7 @@ function buildPrompts() {
     ].join(" "),
   };
 }
+
 
 
 
