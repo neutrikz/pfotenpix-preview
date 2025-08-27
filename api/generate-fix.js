@@ -139,74 +139,69 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
 }
 // ===== Prompts =====
 function buildPrompts() {
+  // Fixe, strikte Komposition (für alle Styles gleich)
   const comp =
-    "Komposition: Motiv strikt mittig und vollständig sichtbar. Das Tier belegt höchstens 20–25% der Bildbreite und -höhe; lasse etwa 40% negativen Raum auf jeder Seite. Nicht heranzoomen; kein enger Beschnitt; keine Rahmen. Hintergrund nahtlos erweitern. Für spätere Crops geeignet.";
+    "Komposition: Motiv streng mittig und vollständig sichtbar. Das Tier belegt höchstens 20–25% der Bildbreite und -höhe; lasse ca. 40% negativen Raum auf jeder Seite. Nicht heranzoomen; kein enger Beschnitt; keine Rahmen. Hintergrund nahtlos erweitern. Für spätere Crops geeignet.";
 
-  // Sonder-Komposition NUR für Neon (Portrait/Anschnitt erlaubt)
-  const compNeon =
-    "Komposition (Neon): Portrait/Brustbild mit Fokus auf Kopf und Oberkörper. Das Motiv darf 35–50% der Bildbreite/-höhe füllen; Beine/Pfoten dürfen angeschnitten sein. Gesicht mittig, Augen ungefähr im oberen Drittel. Hintergrund bleibt nahtlos und clean.";
-
-  const recognizability =
-    "Erkennbarkeit: Es ist eindeutig dasselbe reale Haustier wie auf der Vorlage. Fellfarbe und -zeichnung, charakteristische Abzeichen und Gesichtsmerkmale bleiben erhalten. Augenfarbe/-form, Nase, Schnauze, Ohren und Schnurrhaare bleiben wiedererkennbar. Körperhaltung darf variieren. Keine Accessoires, keine Cartoonisierung, keine Typografie/Logos, keine neuen Vordergrundobjekte.";
-
-  const stylize =
-    "Künstlerische Freiheit: deutliche Farbstimmungen, Glow/Halation, lokaler Kontrast, filmische Gradierung, weiche Vignette, dezentes bis kräftiges Bokeh und strukturierte/painterly Hintergründe sind erlaubt. Farbverschiebungen wirken vor allem in Lichtern/Schatten und an Kanten; Mitteltöne behalten die natürliche Fell-Albedo (weiße Bereiche bleiben weiß/creme).";
+  // Baseline: Wiedererkennbarkeit + Kunstwerk-Charakter (ohne Masken)
+  const identity =
+    "Wiedererkennbarkeit: dasselbe reale Haustier wie auf der Vorlage. Fellfarbe und -zeichnung mit charakteristischen Abzeichen in den MITTELTÖNEN erkennbar belassen; Augenfarbe/-form, Nase, Schnauze, Ohren und Schnurrhaare bleiben natürlich. Keine Accessoires, keine Typografie/Logos, keine neuen Vordergrundobjekte.";
+  const art =
+    "Kunstwerk-Charakter: deutliche Farbstimmung, Glow/Halation und lokale Kontraste sind willkommen. Stil-Effekte wirken vor allem in Lichtern/Schatten; Mitteltöne nicht hart umfärben.";
 
   const quality =
-    "Drucktaugliche Studioqualität, saubere Kanten, fotorealistisch, sRGB, sanfte lokale Tonwertsteuerung.";
+    "Drucktaugliche Studioqualität, fotorealistische Details, sRGB, saubere Kanten, sanfte lokale Tonwertsteuerung.";
 
   return {
-    "neon": [
-      "Cyberpunk-Neon-Studio: SEHR kräftige additive Rim-Lights – links Cyan/Türkis, rechts Magenta/Pink mit warmem Orange-Kicker. Dunkler Indigo→Violett-Verlaufshintergrund mit sichtbarer Halation/Glow und leichter atmosphärischer Nebel-Textur.",
-      "Neon wirkt ADDITIV (Screen/Lighten): Kanten/Highlights dürfen stark einfärben und leicht „wrappen“. Mitteltöne der Fell-Albedo bleiben erkennbar; die weiße Brust bleibt optisch weiß/creme. Farbige Säume an Kanten dürfen 10–25% der Körperbreite einnehmen.",
-      "Gesicht hell und klar, Augen glasig mit farbigen Reflexen/Catchlights; hohe Mikrokontraste an Fellkanten und Schnurrhaaren, kein Oversoften.",
-      compNeon, recognizability, stylize, quality
+    // ——— NEON (stark überzeichnet, Cyan/Magenta) ———
+    neon: [
+      "Galerie-tauglicher Neon-Look: sehr kräftige, additive Rim-Lights — links intensives Cyan/Türkis, rechts sattes Magenta/Pink; optional ein warmer Orange-Kicker in den Highlights.",
+      "Additives Licht (Screen/Lighten): Konturen dürfen stark glühen, aber Mitteltöne der Fell-Albedo bleiben lesbar; weiße Brust bleibt weiß/creme. Halation/Glow sichtbar, feiner atmosphärischer Dunst.",
+      "Dunkler Indigo→Violett-Hintergrundverlauf, dezent texturiert, ohne harte Strukturen. Augen klar mit farbigen Catchlights; Schnurrhaare und Fellkanten sehr scharf, kein Oversoften.",
+      identity, art, comp, quality
     ].join(" "),
 
-    "steampunk": [
-      "Warmer Steampunk-Look: Messing/Kupfer/Dunkelholz-Palette; industrielles Bokeh und dezente Dunst-Atmosphäre nur im Hintergrund.",
-      "Licht wie Wolfram/Glühlampe mit warmem Key und kühlerem Gegenlicht; sanfter Bloom/Halation.",
-      "Stilisierung deutlich spürbar, aber ohne Umfärben der Mitteltöne des Fells.",
-      recognizability, stylize, comp, quality
+    // Die übrigen Stile – frisch, aber moderat künstlerisch
+    cinematic: [
+      "Deutlich filmischer Look: spürbare Teal/Orange-Gradierung, feines Filmkorn, leichte anamorphe Bokeh-Lichter im Hintergrund, sanfter Bloom auf Highlights.",
+      "Schwärzen tief mit Zeichnung, leichte Vignette. Fellmuster natürlich; keine harte globale Umfärbung der Mitteltöne.",
+      identity, art, comp, quality
     ].join(" "),
 
-    "cinematic": [
-      "Filmischer Look mit spürbarer Teal/Orange-Gradierung, feinem Filmkorn und dezenten anamorph wirkenden Bokeh-Lichtern.",
-      "Motiv erhält Key+Rim; Schwarztöne tief aber mit Zeichnung, leichte Vignette, subtiler Bloom auf Highlights.",
-      "Fellmuster klar lesbar; keine globale Re-Coloration der Mitteltöne.",
-      recognizability, stylize, comp, quality
+    lowkey: [
+      "Dramatisches Low-Key-Studio auf tiefem Graphit/Schwarz mit gerichteter Edge-/Rembrandt-Lichtführung.",
+      "Motiv klar heller als der Hintergrund: Gesicht und Brust deutlich lesbar, sanfte Glanzlichter an Fellkanten, dezenter Bloom; keine Silhouette, nichts säuft ab.",
+      identity, art, comp, quality
     ].join(" "),
 
-    "pastell": [
-      "Eleganter Pastell-Look: matte, cremige Verlaufshintergründe (Sage/Sand/Blush) mit weicher Diffusion.",
-      "Painterly-Weichzeichnung erlaubt – aber Gesicht/Abzeichen und Augen scharf und lebendig halten.",
-      "Farbigkeit insgesamt hell/luftig; Mitteltöne des Fells natürlich.",
-      recognizability, stylize, comp, quality
+    highkey: [
+      "Strahlendes High-Key-Porträt: fast weißer Hintergrund, große weiche Lichtquellen, sehr sanfte Schatten, leichter Glow.",
+      "Airy und modern; Konturen sauber, Augen lebendig, Fellzeichnung klar.",
+      identity, art, comp, quality
     ].join(" "),
 
-    "vintage": [
-      "Zeitloser Vintage-Look: elfenbein/leichter Sepia-Ton, feines analoges Grain, sanfte Halation.",
-      "Leichte Papier-/Fasertextur NUR im Hintergrund; glaubwürdige Fellfarben im Motiv ohne harte Umfärbung.",
-      "Behutsame Vignette, zarte Kontrast-S-Kurve.",
-      recognizability, stylize, comp, quality
+    pastell: [
+      "Eleganter Pastell-Look: matte, cremige Hintergrundverläufe (Sage/Sand/Blush) mit diffusem, weichem Licht.",
+      "Leichte painterly-Textur im Hintergrund erlaubt; Motiv bleibt natürlich scharf in Gesicht/Augen.",
+      identity, art, comp, quality
     ].join(" "),
 
-    "highkey": [
-      "Helles High-Key-Porträt: fast weißer Hintergrund, große weiche Lichtquellen, sanfte Schatten, leichter Bloom.",
-      "Airy, modern, clean; Kanten sauber, Augen lebendig, Fellzeichnung klar.",
-      recognizability, stylize, comp, quality
+    vintage: [
+      "Zeitloser Vintage-Look: zarter Elfenbein-/leichter Sepia-Ton, feines analoges Grain, behutsame Halation.",
+      "Hintergrund darf Papier-/Fasercharakter andeuten; Fellfarben des Tiers in den Mitteltönen glaubwürdig.",
+      identity, art, comp, quality
     ].join(" "),
 
-    "lowkey": [
-      "Dramatisches Low-Key-Porträt auf tiefem Graphit/Schwarz mit gerichteter Lichtführung (Edge-/Rembrandt-Licht).",
-      "Das Tier ist spürbar heller als der Hintergrund: Gesicht und Brust gut lesbar, keine Silhouette; Glanzlichter an Fellkanten, dezenter Bloom.",
-      recognizability, stylize, comp, quality
+    steampunk: [
+      "Warmer Steampunk-Tonwert mit Messing/Kupfer-Palette im HINTERGRUND (unscharfes industrielles Bokeh).",
+      "Warmes Wolfram-Keylight + kühleres Rim; stilisiert aber ohne harte Umfärbung der Mitteltöne am Fell.",
+      identity, art, comp, quality
     ].join(" "),
 
-    "natural": [
-      "Premium-Studio-Look: natürliche Farben mit sanfter Lichtführung, sauberer Verlaufshintergrund, feine Klarheit.",
-      "Leichter Glow/Vignette erlaubt für edle Anmutung – ohne die Mitteltöne des Fells umzufärben.",
-      recognizability, stylize, comp, quality
+    natural: [
+      "Edler Neutral-Studio-Look: ausgewogene Farben, sanfter Verlaufshintergrund, subtile Klarheit.",
+      "Leichte Vignette/Glow für Tiefe, insgesamt realistisch und ruhig.",
+      identity, art, comp, quality
     ].join(" "),
   };
 }
