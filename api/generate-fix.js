@@ -159,53 +159,63 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
 
 
 /**
- * Prompt-Bausteine (Half-Portrait + Landscape-safe + kräftiger Neon-Glow)
+ * Prompt-Bausteine (Half-Portrait, Landscape-safe, harter Anti-Zoom, starker Neon-Glow)
  */
 function buildPrompts() {
-  // Querformat-tauglich + harte Größenlimits
+  // Querformat-tauglich + harte Größen-/Abstands-Locks
   const compCommon =
-    "Komposition: streng mittig, komplette Kopfform sichtbar, nicht heranzoomen. " +
-    "Motiv ≤ 32–36% der Bildbreite und ≤ 36–40% der Bildhöhe; rundum 35–45% Negativraum. " +
-    "Muss auch als 16:9-Landscape-Crop funktionieren – links und rechts ausreichend Luft lassen, " +
-    "keine Elemente nahe an den Bildrändern. Keine engen Beschnitte, keine Rahmen, keine schräge Perspektive.";
+    "Komposition: streng mittig, komplette Kopfform sichtbar. " +
+    "MOTIVGRÖSSE FIXIERT – NICHT heranzoomen, NICHT vergrößern, NICHT enger zuschneiden. " +
+    "Motiv ≤ 28–34% der Bildbreite und ≤ 32–36% der Bildhöhe; rundum 38–48% Negativraum. " +
+    "Links/rechts + oben/unten großzügige Ränder; Ohren vollständig innerhalb des Rahmens. " +
+    "Bild MUSS als 16:9-Landscape-Crop funktionieren (seitlich deutlich Luft). " +
+    "Keine engen Beschnitte, keine Rahmen, keine schrägen Perspektiven, keine Re-Framing-Effekte.";
 
-  // Half-Portrait klar erzwingen
+  // Half-Portrait hart erzwingen
   const compBust =
     "Framing: Half-Portrait (Brust bis Kopf). Oberer Brustbereich sichtbar; " +
     "kein Head-only, keine Pfoten/Beine/Unterkörper, kein Ganzkörper, kein liegendes Vollformat. " +
-    "Kopf und Brust vorn klar, Hintergrund weich und großzügig.";
+    "Kopf/Brust vorne klar, Hintergrund weich und großzügig.";
 
-  // Wiedererkennbarkeit / Identität
+  // Identitäts-Lock (Gesichtsgeometrie + Fell/Markierungen + Farben)
   const identity =
-    "Wiedererkennbarkeit: dasselbe reale Tier wie auf der Vorlage. " +
-    "Gesichtsproportionen exakt: Augenabstand/-form, Ohren-Set/Neigung, Schädelbreite, Nasenform/-länge. " +
-    "Fellfarbe/-zeichnung nach Mitteltönen; charakteristische Abzeichen/Maske/Stirnfalten/helle Bereiche originalgetreu. " +
-    "Nichts erfinden, nichts weglassen; keine Accessoires, keine Typografie, keine zusätzlichen Objekte.";
+    "Wiedererkennbarkeit: EXAKT dasselbe reale Tier wie auf der Vorlage. " +
+    "Gesichtsproportionen unverändert: Augenabstand und -form, Ohren-Set/Neigung, Schädelbreite, " +
+    "Schnauzenlänge/-form. Fellfarbe/-zeichnung strikt an Mitteltönen orientiert; " +
+    "charakteristische Abzeichen/Maske/Brustfleck/Stirnfalten bleiben originalgetreu. " +
+    "Keine Rasse-/Kopfform-Änderung, keine neu erfundenen Markierungen, " +
+    "keine globale Mitteltön-Umsättigung oder Farbumschichtung. " +
+    "Keine Accessoires, keine Typografie, keine zusätzlichen Objekte.";
 
   const quality =
     "Studioqualität, sRGB, fein detaillierte Fellstruktur und Schnurrhaare, saubere Kanten, " +
-    "sanfte lokale Tonwertsteuerung, kein Wachslook, kein Oversoften.";
+    "sanfte lokale Tonwertsteuerung, kein Wachslook, kein Oversoften, natürliche Mikrokontraste.";
 
-  // Negativliste – extra Anti-Closeup/Anti-Tight-Crop
+  // Negativliste – starke Anti-Zoom/Anti-Crop Sicherungen
   const negCommon =
     "full body, whole body, legs, paws, lower body, lying, " +
     "tight framing, tight crop, close crop, extreme close-up, macro portrait, face-only, head-only, " +
-    "fill frame, full-bleed, zoomed in, enlarged face, subject touching frame edges, cropped ears, " +
+    "zoomed in, enlarged face, fill frame, full-bleed, subject touching frame edges, cropped ears, " +
+    "reframing, recrop, punch-in, perspective crop, " +
     "fisheye, wide distortion, caricature, chibi, anime, 3d render, painting, oversaturated, posterized, " +
     "watercolor, oil paint, lowres, jpeg artifacts, blurry, noise, banding, " +
     "wrong breed, wrong coat color, wrong markings, mismatched eye spacing, asymmetric face, " +
-    "deformed anatomy, duplicate nose, extra ears";
+    "deformed anatomy, duplicate nose, extra ears, " +
+    "global midtone recolor, harsh color shift in midtones";
 
-  // NEON – deutlich heller/diffuser Glow + stärkere Rims
+  // NEON – heller/diffuser Glow + stärkere, additive Rims, Mitteltöne bleiben lesbar
   const neonBg =
-    "Hintergrund: sehr heller, dennoch diffuser Neon-Glow-Verlauf von tiefem Indigo (links) zu Violett–Magenta (rechts). " +
-    "Großflächiger weicher Schimmer/Haze, sanfte Bloom-Höfe, dezente aber sichtbare großflächige Bokeh/Dust-Partikel. " +
+    "Hintergrund: sehr heller, aber diffuser Neon-Glow-Verlauf von tiefem Indigo (links) zu Violett-Magenta (rechts). " +
+    "Großflächiger atmosphärischer Dunst/Haze, sanfte Bloom-Höfe, " +
+    "dezent verteilte, relativ großflächige Bokeh/Dust-Partikel. " +
     "Keine harten Lichtstrahlen, keine Laser/Godrays, keine Spotlights, keine Props.";
 
   const neonLight =
     "Licht: kräftige additive Rim-Lights – links intensives Cyan/Teal, rechts sattes Magenta/Pink; " +
-    "optional ein kleiner warmer Orange-Kicker in Highlights. " +
-    "Rims deutlich sichtbar an Fellkanten, aber Mitteltöne/Fell-Albedo bleiben lesbar (weiße/creme Bereiche bleiben neutral).";
+    "ein kleiner warmer Orange-Kicker in Highlights ist erlaubt. " +
+    "Rims deutlich sichtbar an Fellkanten/Schattenkämmen, " +
+    "doch Mitteltöne/Fell-Albedo bleiben erkennbar (weiße/creme Bereiche bleiben neutral). " +
+    "Komposition/Skalierung NICHT verändern – keine zusätzliche Nähe.";
 
   const neonPrompt = [
     "Galerie-taugliches Neon-Portrait desselben Tieres, fotorealistisch, Brust bis Kopf.",
@@ -220,7 +230,7 @@ function buildPrompts() {
   const neonNeg =
     negCommon + ", hard godrays, laser beams, spotlight rays, high-contrast poster look";
 
-  // Weitere Stile – ebenfalls landscape-safe + Half-Portrait
+  // Weitere Stile – weiterhin landscape-safe + Half-Portrait + Anti-Zoom
   const cinematic = [
     "Filmischer Look mit sanfter Teal/Orange-Gradierung, feinem Filmkorn, " +
       "zarten anamorphischen Bokeh-Lichtern im Hintergrund, leichter Bloom.",
@@ -275,6 +285,7 @@ function buildPrompts() {
     natural:   { prompt: natural,     negative: negCommon },
   };
 }
+
 
 
 
