@@ -1,14 +1,14 @@
 // /api/generate-fix.js — Background-only Neon edit (single pass) with identity lock
-// Version: PFPX-2025-09a
+// Version: PFPX-2025-09b (headroom + slight brighten)
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
 export const config = { api: { bodyParser: false } };
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const VERSION = "PFPX-2025-09a";
+const VERSION = "PFPX-2025-09b";
 
-// ============= CORS ==================
+// ================= CORS =================
 function applyCORS(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -19,7 +19,7 @@ function applyCORS(req, res) {
   );
 }
 
-// ============= Utils =================
+// ================= Utils ================
 async function readRawBody(req) {
   const chunks = [];
   for await (const ch of req) chunks.push(ch);
@@ -73,8 +73,6 @@ function parseMultipart(buffer, boundary) {
   return { fields, files };
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 function extractUrlOrDataUri(json) {
   const item = json?.data?.[0];
   if (!item) return null;
@@ -105,92 +103,99 @@ async function fetchOpenAIEdits(form) {
   return out;
 }
 
-// ============= Canvas / Mask =================
-// Wir bauen ein 1024x1024-Canvas; das Original wird zentriert kleiner eingesetzt.
-// (m ~ 0.34 => viel Negativraum, landscape-sicher)
-async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
-  const m = Math.max(0, Math.min(marginPct ?? 0.34, 0.49));
-  const subjectSize = Math.round(targetSize * (1 - 2 * m));
-  const pad = Math.round(targetSize * m);
+// ============ Canvas + Maske ============
+// Rückt das Motiv etwas nach unten (mehr Luft oben) und hellt es leicht auf.
+async function makeOutpaintCanvasAndMask(inputBuffer, targetSize, opts = {}) {
+  const {
+    marginPct = 0.36,       // Motiv kleiner → landscape-tauglich
+    headroomTopPct = 0.08,  // zusätzliche Luft oben (verschiebt Motiv nach unten)
+    brighten = 0.08,        // Motiv minimal heller (0.00–0.15 sinnvoll)
+    maskFeatherPx = 8       // weicher Maskenrand (für minimalen Rim-Glow)
+  } = opts;
 
+  const size = targetSize;
+  const m = Math.max(0, Math.min(marginPct, 0.49));
+
+  // Grund-Pads (links/rechts symmetrisch):
+  const padX = Math.round(size * m);
+
+  // Headroom: wir erhöhen den oberen Pad und verringern den unteren
+  const shift = Math.round(size * headroomTopPct);
+  const padTop = Math.max(0, Math.round(size * m) + shift);
+  const padBottom = Math.max(0, Math.round(size * m) - shift);
+
+  // Motiv-Größe (bezogen auf die kleinere nutzbare Innenfläche)
+  const innerW = size - 2 * padX;
+  const innerH = size - padTop - padBottom;
+  const subjectSize = Math.min(innerW, innerH);
+
+  // Motiv minimal aufhellen, ohne Farben stark zu verändern
   const subject = await sharp(inputBuffer)
     .resize(subjectSize, subjectSize, {
       fit: "contain",
       background: { r: 0, g: 0, b: 0, alpha: 0 },
     })
+    .modulate({ brightness: 1 + brighten, saturation: 1.0 })
     .png()
     .toBuffer();
 
+  // Canvas + Compositing
   const canvas = await sharp({
     create: {
-      width: targetSize,
-      height: targetSize,
+      width: size,
+      height: size,
       channels: 4,
       background: { r: 0, g: 0, b: 0, alpha: 0 },
     },
   })
-    .composite([{ input: subject, left: pad, top: pad }])
+    .composite([{ input: subject, left: padX, top: padTop }])
     .png()
     .toBuffer();
 
-  return { canvas, pad, subjectSize };
-}
-
-// Elliptische Masken (innen SCHWARZ = schützen; außen WEISS = editierbar).
-// optional feather am Rand (Alpha-Kante), 0 = harte Kante.
-async function makeEllipseMaskPNG(size, pad, featherPx = 0) {
-  const innerW = size - 2 * pad;
-  const innerH = size - 2 * pad;
-
+  // Ellipsen-Maske: innen SCHWARZ (geschützt), außen WEISS (editierbar)
   const rx = innerW / 2;
   const ry = innerH / 2;
-
   const cx = size / 2;
-  const cy = size / 2;
+  const cy = padTop + innerH / 2;
 
-  // Hart + optional Feather über zweite Ellipse mit halbtransparenter Kante
-  const feather = Math.max(0, Math.floor(featherPx));
+  const feather = Math.max(0, Math.floor(maskFeatherPx));
   const svg = `
-  <svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">
-    <!-- Grundfläche: WEISS (editierbar) -->
-    <rect width="100%" height="100%" fill="white"/>
-    <!-- Schutz: SCHWARZ -->
-    <ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="black"/>
-    ${
-      feather > 0
-        ? `
-      <defs>
-        <radialGradient id="g" cx="50%" cy="50%" r="50%">
-          <stop offset="80%" stop-color="black" stop-opacity="1"/>
-          <stop offset="100%" stop-color="white" stop-opacity="1"/>
-        </radialGradient>
-      </defs>
-      <!-- Feather-Ring: von schwarz nach weiß (macht den Übergang weicher) -->
-      <ellipse cx="${cx}" cy="${cy}" rx="${rx + feather}" ry="${ry + feather}" fill="url(#g)"/>
-      `
-        : ""
-    }
-  </svg>`;
+    <svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">
+      <rect width="100%" height="100%" fill="white"/>
+      <ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="black"/>
+      ${
+        feather > 0
+          ? `
+        <defs>
+          <radialGradient id="g" cx="50%" cy="50%" r="50%">
+            <stop offset="80%" stop-color="black" stop-opacity="1"/>
+            <stop offset="100%" stop-color="white" stop-opacity="1"/>
+          </radialGradient>
+        </defs>
+        <ellipse cx="${cx}" cy="${cy}" rx="${rx + feather}" ry="${ry + feather}" fill="url(#g)"/>
+        `
+          : ""
+      }
+    </svg>`;
 
-  return await sharp(Buffer.from(svg)).png().toBuffer();
+  const maskPng = await sharp(Buffer.from(svg)).png().toBuffer();
+
+  return { canvas, maskPng, padX, padTop, padBottom, subjectSize };
 }
 
-// ============= Prompts =================
+// =============== Prompts ===============
 function buildPrompts() {
-  // Querformat-tauglich: bewusst klein + viel Negativraum
   const compCommon =
     "Komposition: streng mittig, komplette Kopfform sichtbar, nicht heranzoomen. " +
     "Motiv ≤ 32–36% der Bildbreite und ≤ 35–40% der Bildhöhe; rundum 35–45% Negativraum. " +
     "Muss als 16:9-Landscape-Crop funktionieren (seitlich ausreichend Luft). " +
     "Keine engen Beschnitte, keine Rahmen, keine schräge Perspektive.";
 
-  // Half-Portrait
   const compBust =
     "Framing: Half-Portrait (Brust bis Kopf). Oberer Brustbereich sichtbar; " +
     "kein Head-only, keine Pfoten/Beine/Unterkörper, kein Ganzkörper. " +
     "Kopf/Brust vorn klar, Hintergrund weich.";
 
-  // Identität bleibt – wir bearbeiten NUR den Bereich außerhalb der Maske
   const identity =
     "WICHTIG: Bereiche innerhalb der Schutzmaske bleiben 1:1 erhalten; keine Veränderung am Tier. " +
     "Wiedererkennbarkeit absolut: Gesichtsproportionen, Augenabstand/-form, Ohren-Set, Schädelbreite, Nasenform/-länge, " +
@@ -207,13 +212,11 @@ function buildPrompts() {
     "3d render, painting, watercolor, oil paint, lowres, jpeg artifacts, " +
     "blurry, noise, banding, wrong breed, wrong coat color, wrong markings";
 
-  // Neon-Hintergrund (nur außen bearbeiten!)
   const neonBg =
     "Hintergrund NUR außerhalb der Maske: kräftiger, aber diffuser Neon-Glow von tiefem Indigo (links) zu Violett–Magenta (rechts). " +
     "Feiner atmosphärischer Dunst/Schimmer, weiche Glow-Höfe, dezente großflächige Bokeh/Dust-Partikel. " +
     "Keine harten Lichtstrahlen, keine Laser/Godrays, keine Spotlights, keine zusätzlichen Objekte.";
 
-  // Rim-Lights: nur als Lichtschein aus dem Hintergrund gedacht
   const neonLight =
     "Lichtwirkung: deutliche additive Rim-Lights (links Cyan/Teal, rechts Magenta/Pink) als Hintergrundlicht; " +
     "die Farbe darf knapp an die Kontur anliegen, ohne das Innere des Tiers zu übermalen.";
@@ -229,15 +232,12 @@ function buildPrompts() {
     "Bearbeite ausschließlich die freigegebenen (hellen) Maskenflächen."
   ].join(" ");
 
-  const neonNeg =
-    negCommon + ", hard godrays, laser beams, spotlight rays, posterized";
+  const neonNeg = negCommon + ", hard godrays, laser beams, spotlight rays, posterized";
 
-  return {
-    neon: { prompt: neonPrompt, negative: neonNeg },
-  };
+  return { neon: { prompt: neonPrompt, negative: neonNeg } };
 }
 
-// ============= Handler =================
+// ============== Handler ================
 export default async function handler(req, res) {
   applyCORS(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -245,13 +245,22 @@ export default async function handler(req, res) {
 
   try {
     const SIZE = 1024;
-    const COMPOSE_MARGIN_DEFAULT = 0.34;  // kleineres Motiv → landscape-safe
-    const MASK_FEATHER_PX = 0;            // 0 = harte Kante; 8–16 = weicher
+
+    // Default-Parameter (hier die gewünschten Änderungen):
+    const DEFAULTS = {
+      marginPct: 0.36,        // kleineres Motiv → besser croppbar (Landscape)
+      headroomTopPct: 0.08,   // mehr Luft über dem Kopf
+      brighten: 0.08,         // Motiv etwas heller
+      maskFeatherPx: 8        // weiche Kante für sanften Rim-Glow
+    };
 
     const ctype = (req.headers["content-type"] || "").toLowerCase();
     let sourceBuffer = null;
     let style = "neon";
-    let compose_margin = COMPOSE_MARGIN_DEFAULT;
+    // optional overrides:
+    let compose_margin = DEFAULTS.marginPct;
+    let headroomTopPct = DEFAULTS.headroomTopPct;
+    let brighten = DEFAULTS.brighten;
 
     if (ctype.startsWith("multipart/form-data")) {
       const m = /boundary=([^;]+)/i.exec(ctype);
@@ -265,6 +274,14 @@ export default async function handler(req, res) {
         const v = parseFloat(fields["compose_margin"]);
         if (Number.isFinite(v)) compose_margin = v;
       }
+      if (fields["headroom_top_pct"]) {
+        const v = parseFloat(fields["headroom_top_pct"]);
+        if (Number.isFinite(v)) headroomTopPct = v;
+      }
+      if (fields["brighten"]) {
+        const v = parseFloat(fields["brighten"]);
+        if (Number.isFinite(v)) brighten = v;
+      }
     } else if (ctype.includes("application/json")) {
       const body = JSON.parse((await readRawBody(req)).toString("utf8") || "{}");
       const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/, "");
@@ -275,25 +292,31 @@ export default async function handler(req, res) {
         const v = parseFloat(body.compose_margin);
         if (Number.isFinite(v)) compose_margin = v;
       }
+      if (body.headroom_top_pct != null) {
+        const v = parseFloat(body.headroom_top_pct);
+        if (Number.isFinite(v)) headroomTopPct = v;
+      }
+      if (body.brighten != null) {
+        const v = parseFloat(body.brighten);
+        if (Number.isFinite(v)) brighten = v;
+      }
     } else {
       return res.status(415).json({ error: "Unsupported Content-Type" });
     }
 
-    // 1) Canvas bauen (klein + viel Rand)
-    const { canvas, pad } = await makeOutpaintCanvas(
-      sourceBuffer,
-      SIZE,
-      compose_margin
-    );
+    // 1) Canvas + Maske
+    const { canvas, maskPng } = await makeOutpaintCanvasAndMask(sourceBuffer, SIZE, {
+      marginPct: compose_margin,
+      headroomTopPct,
+      brighten,
+      maskFeatherPx: DEFAULTS.maskFeatherPx
+    });
 
-    // 2) Ellipsen-Maske erzeugen (innen schwarz = schützen)
-    const maskPng = await makeEllipseMaskPNG(SIZE, pad, MASK_FEATHER_PX);
-
-    // 3) Prompt holen (nur Neon hier aktiv)
+    // 2) Prompt (nur Neon aktiv)
     const { neon } = buildPrompts();
     const prompt = neon.prompt + ` Negative: ${neon.negative}`;
 
-    // 4) 1× Edit-Call – NUR Hintergrund wird erzeugt
+    // 3) Ein einziger Edit-Call (Hintergrund)
     const form = new FormData();
     form.set("model", "gpt-image-1");
     form.set("image", new File([canvas], "image.png", { type: "image/png" }));
@@ -310,12 +333,12 @@ export default async function handler(req, res) {
       success: true,
       previews: { [style]: outUrl },
       compose_margin,
-      version: VERSION,
+      headroom_top_pct: headroomTopPct,
+      brighten,
+      version: VERSION
     });
   } catch (err) {
     console.error("generate-fix error:", err);
-    return res
-      .status(500)
-      .json({ success: false, error: String(err?.message || err) });
+    return res.status(500).json({ success: false, error: String(err?.message || err) });
   }
 }
