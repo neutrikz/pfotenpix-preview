@@ -1,5 +1,4 @@
-// /api/preview-proxy.js – Wasserzeichen-Proxy (CORS offen, sichtbares WM, http/https + data: Support)
-// Robuster: harte Limits, EXIF-Ausrichtung, sRGB, Timeout, Content-Length-Prüfung
+// /api/preview-proxy.js – Wasserzeichen-Proxy (CORS offen, http/https & data:, Limits, sRGB)
 import sharp from "sharp";
 import fs from "node:fs";
 import path from "node:path";
@@ -76,7 +75,7 @@ async function fetchUpstream(u) {
     headers: baseHeaders, redirect: "follow", cache: "no-store", signal: controller.signal
   }).catch((e) => { throw new Error(`fetch_fail_1 ${String(e)}`); });
 
-  if (!r.ok) {
+  if (!r || !r.ok) {
     const fallbackHeaders = { ...baseHeaders, referer: "https://pfotenpix.de/" };
     r = await fetch(url.toString(), {
       headers: fallbackHeaders, redirect: "follow", cache: "no-store", signal: controller.signal
@@ -132,8 +131,8 @@ function loadFontFromPublic() {
   return null;
 }
 
-/* ========================= Handler ========================= */
-async function previewProxyHandler(req, res) {
+/* ========================= EINZIGER Default-Handler ========================= */
+export default async function handler(req, res) {
   applyCORS(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET")     return res.status(405).end();
@@ -222,5 +221,3 @@ async function previewProxyHandler(req, res) {
     }));
   }
 }
-
-export default previewProxyHandler;
