@@ -1,17 +1,34 @@
-// /api/generate-fix.js — Identity-safe Neon via masked edits (face/torso protected, soft rim zone)
-// Version: PFPX-2025-09d
+// /api/generate-fix.js
+// PFPX – "Bewusst überzeichnen" (Neon) + Landscape-safe Komposition
+// Version: PFPX-OVERDRAW-2025-09a
+
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
 export const config = { api: { bodyParser: false } };
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const VERSION = "PFPX-2025-09d";
+const VERSION = "PFPX-OVERDRAW-2025-09a";
 
-function cors(res) {
+/* ========================= CORS & Utils ========================= */
+
+function applyCORS(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "*");
-  res.setHeader("Access-Control-Expose-Headers", "x-pfpx-version");
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "x-request-id,retry-after,x-pfpx-version,x-pfpx-style-header,x-pfpx-style-query,x-pfpx-style-final,x-pfpx-styles-array"
+  );
+}
+
+function setDiagHeaders(res, { styleHeader, styleQuery, normalized, finalStyle, version }) {
+  try {
+    res.setHeader("x-pfpx-version", String(version || VERSION));
+    res.setHeader("x-pfpx-style-header", String(styleHeader || ""));
+    res.setHeader("x-pfpx-style-query", String(styleQuery || ""));
+    res.setHeader("x-pfpx-style-final", String(finalStyle || ""));
+    res.setHeader("x-pfpx-styles-array", JSON.stringify(normalized || []));
+  } catch {}
 }
 
 async function readRawBody(req) {
@@ -23,18 +40,20 @@ async function readRawBody(req) {
 function parseMultipart(buffer, boundary) {
   const CRLF = "\r\n";
   const delim = `--${boundary}`;
-  const close = `--${boundary}--`;
+  const closeDelim = `--${boundary}--`;
   const body = buffer.toString("binary");
-  const parts = body.split(delim).filter(p => p && p !== "--" && p !== close);
+  const parts = body.split(delim).filter((p) => p && p !== "--" && p !== closeDelim);
 
-  const fields = {}, files = {};
-  for (let raw of parts) {
-    if (raw.startsWith(CRLF)) raw = raw.slice(CRLF.length);
+  const fields = {};
+  const files = {};
+  for (let rawPart of parts) {
+    if (rawPart.startsWith(CRLF)) rawPart = rawPart.slice(CRLF.length);
     const sep = CRLF + CRLF;
-    const i = raw.indexOf(sep);
-    if (i === -1) continue;
-    const rawHeaders = raw.slice(0, i);
-    let rawContent = raw.slice(i + sep.length);
+    const idx = rawPart.indexOf(sep);
+    if (idx === -1) continue;
+
+    const rawHeaders = rawPart.slice(0, idx);
+    let rawContent = rawPart.slice(idx + sep.length);
     if (rawContent.endsWith(CRLF)) rawContent = rawContent.slice(0, -CRLF.length);
 
     const headers = {};
@@ -49,7 +68,11 @@ function parseMultipart(buffer, boundary) {
 
     if (!name) continue;
     if (filename) {
-      files[name] = { filename, contentType: ctype || "application/octet-stream", buffer: Buffer.from(rawContent, "binary") };
+      files[name] = {
+        filename,
+        contentType: ctype || "application/octet-stream",
+        buffer: Buffer.from(rawContent, "binary"),
+      };
     } else {
       fields[name] = Buffer.from(rawContent, "binary").toString("utf8");
     }
@@ -57,181 +80,368 @@ function parseMultipart(buffer, boundary) {
   return { fields, files };
 }
 
-/** Motiv kleiner + Headroom oben (ohne Tier zu verändern) */
-async function placeOnCanvas(inputBuffer, size, { composeMargin = 0.42, headroomTopPct = 0.16 } = {}) {
-  const padX = Math.round(size * Math.max(0, Math.min(composeMargin, 0.49)));
-  const basePad = padX;
-  const shiftDown = Math.round(size * Math.max(0, Math.min(headroomTopPct, 0.3)));
-  const padTop = basePad + shiftDown;
-  const padBottom = Math.max(0, basePad - shiftDown);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const withJitter = (ms) => Math.round(ms * (0.85 + Math.random() * 0.3));
 
-  const innerW = size - 2 * padX;
-  const innerH = size - padTop - padBottom;
-  const subjectSize = Math.min(innerW, innerH);
+function extractUrlOrDataUri(json) {
+  const item = json?.data?.[0];
+  if (!item) return null;
+  if (item.url) return item.url;
+  if (item.b64_json) return `data:image/png;base64,${item.b64_json}`;
+  return null;
+}
 
-  const subject = await sharp(inputBuffer)
-    .resize(subjectSize, subjectSize, { fit: "contain", background: { r:0,g:0,b:0,alpha:0 } })
+async function fetchOpenAIWithRetry(form, { retries = 4, baseDelayMs = 1000 } = {}) {
+  let last = null;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetch("https://api.openai.com/v1/images/edits", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, ...form.headers },
+        body: form,
+      });
+      const txt = await resp.text();
+      let json;
+      try {
+        json = JSON.parse(txt);
+      } catch {
+        json = null;
+      }
+
+      if (resp.ok) {
+        const out = extractUrlOrDataUri(json);
+        if (out) return out;
+      }
+
+      const retryAfter = parseFloat(resp.headers?.get?.("retry-after") || "0");
+      const is5xx = resp.status >= 500 && resp.status <= 599;
+      const serverErr = json?.error?.type === "server_error";
+
+      if (attempt === retries || !(is5xx || serverErr)) {
+        last = new Error(json?.error?.message || `HTTP ${resp.status}`);
+        break;
+      }
+      const wait = Math.max(withJitter(baseDelayMs * Math.pow(2, attempt - 1)), retryAfter * 1000);
+      await sleep(wait);
+    } catch (e) {
+      last = e;
+      if (attempt === retries) break;
+      await sleep(withJitter(baseDelayMs * Math.pow(2, attempt - 1)));
+    }
+  }
+  throw last || new Error("OpenAI fehlgeschlagen");
+}
+
+/* ========================= Outpaint-Canvas =========================
+   Ziel: Motiv bewusst kleiner + mehr Headroom (oben mehr Luft).
+   - SIZE: 1024x1024
+   - marginPct: steuert Motivgröße (0.32–0.40 sinnvoll)
+   - headroomBias: verschiebt das Motiv leicht nach UNTEN (mehr Platz oben)
+=================================================================== */
+
+async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct, headroomBias = 0.06) {
+  // clamp
+  const m = Math.max(0.18, Math.min(marginPct ?? 0.34, 0.46));
+  const headBias = Math.max(-0.10, Math.min(headroomBias ?? 0, 0.12));
+
+  const subjectSize = Math.round(targetSize * (1 - 2 * m)); // zentrierte Kante
+  const pad = Math.round(targetSize * m);
+
+  const subjectPng = await sharp(inputBuffer)
+    .resize(subjectSize, subjectSize, {
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
     .png()
     .toBuffer();
 
+  const left = pad; // bewusst viel Sideroom
+  const top = Math.round(pad + targetSize * headBias); // etwas nach unten -> oben mehr Luft
+
   const canvas = await sharp({
-    create: { width: size, height: size, channels: 4, background: { r:0,g:0,b:0,alpha:0 } }
-  }).composite([{ input: subject, left: padX, top: padTop }]).png().toBuffer();
+    create: {
+      width: targetSize,
+      height: targetSize,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .composite([{ input: subjectPng, left, top }])
+    .png()
+    .toBuffer();
 
-  return { canvas, padX, padTop, innerW, innerH };
+  return canvas;
 }
 
-/** Weiche, elliptische Schutzmaske:
- *  - Voller Schutz (weiß) im Kern (Gesicht/Brust).
- *  - Weicher Schutzring (niedrigere Opazität) für subtile Farbsaum-Bearbeitung.
- *  - Außen transparent => darf editiert werden (Hintergrund/Neon).
- */
-async function buildSoftMask(size, { padX, padTop, innerW, innerH }, {
-  faceScaleX = 0.58,   // Deckungsgrad in X über dem inneren Platz
-  faceScaleY = 0.70,   // Deckungsgrad in Y
-  ringOpacity = 0.55,  // Schutzring-Opazität (0..1)
-  blurPx = 28          // Weichzeichnung der Maske
-} = {}) {
-  const cx = size / 2;
-  const cy = padTop + innerH / 2;
-  const rx = (innerW * faceScaleX) / 2;
-  const ry = (innerH * faceScaleY) / 2;
+/* ========================= Prompts (Bewusst überzeichnen) ========================= */
 
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">
-      <defs>
-        <filter id="f" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="${blurPx}" />
-        </filter>
-      </defs>
-      <!-- Hintergrund transparent (editierbar) -->
-      <rect width="100%" height="100%" fill="rgba(0,0,0,0)"/>
-      <!-- Schutzring (teilweise Schutz, erlaubt leichte Rim-Lights) -->
-      <ellipse cx="${cx}" cy="${cy}" rx="${rx * 1.15}" ry="${ry * 1.15}" fill="rgba(255,255,255,${ringOpacity})" filter="url(#f)"/>
-      <!-- Voll geschützter Kern -->
-      <ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="rgba(255,255,255,1)"/>
-    </svg>
-  `;
-  return await sharp(Buffer.from(svg)).png().toBuffer();
+function buildPrompts() {
+  // Landscape-tauglich + kleineres Motiv + mehr Headroom
+  const compCommon =
+    "Komposition: streng mittig, komplette Kopfform sichtbar, nicht heranzoomen. " +
+    "Motiv bewusst klein (≈ 36–40% der Bildbreite; ≤ 42% der Bildhöhe), " +
+    "viel Headroom & Sideroom für 16:9-Landscape-Crops. " +
+    "Keine engen Beschnitte, keine Rahmen, keine schräge Perspektive.";
+
+  const compBust =
+    "Framing: Half-Portrait (Brust bis Kopf). Oberer Brustbereich sichtbar; " +
+    "kein Head-only, kein Ganzkörper, keine Pfoten/Beine im Bild. " +
+    "Kopf minimal tiefer gesetzt, damit oben extra Luft bleibt.";
+
+  // Wiedererkennbarkeit bleibt gefordert (aber wir überzeichnen Licht/Glow)
+  const identity =
+    "Wiedererkennbarkeit: dasselbe reale Tier wie auf der Vorlage. " +
+    "Gesichtsproportionen beibehalten: Augenabstand/-form, Ohren-Set/Neigung, Schädelbreite, Nasenlänge/-form. " +
+    "Fellfarben/Fellzeichnung in den MITTELTÖNEN NATÜRLICH lassen (weiße/creme Bereiche bleiben neutral). " +
+    "Charakteristische Abzeichen/Maske/Stirnfalten erhalten. Keine Accessoires, keine zusätzlichen Objekte.";
+
+  const quality =
+    "Studioqualität, sRGB, fein detaillierte Fellstruktur und Schnurrhaare, " +
+    "saubere Kanten (kein Wachslook), sanfte lokale Tonwertsteuerung. " +
+    "Mitteltöne insgesamt leicht heller (ca. +0.2 EV) für natürliches Fell.";
+
+  // Anti-Closeup/Anti-Drift
+  const negCommon =
+    "full body, whole body, paws, legs, lying, " +
+    "tight crop, close crop, extreme close up, macro portrait, face-only, head-only, " +
+    "fill frame, full-bleed, zoomed in, enlarged face, fisheye, caricature, anime, " +
+    "painting, oversaturated, posterized, watercolor, oil paint, lowres, jpeg artifacts, " +
+    "blurry, noise, banding, wrong breed, wrong coat color, mismatched eye spacing, " +
+    "asymmetric face, deformed anatomy, duplicate nose, extra ears";
+
+  // **Bewusst überzeichnete** Neon-Variante:
+  const neonBg =
+    "Hintergrund: starker, aber diffuser Neon-Glow (links tiefes Indigo → rechts Violett/Magenta), " +
+    "deutliche weiche Bloom-Höfe, großzügige atmosphärische Dunstwolken, " +
+    "dezente, großflächige Dust/Bokeh-Partikel, keine harten Laser/Godrays, keine Spotlights.";
+
+  const neonLight =
+    "Licht: markante additive Rim-Lights – links kräftiges Cyan/Teal, rechts sattes Magenta/Pink, " +
+    "sichtbarer Bloom/Halation an Fellkanten, " +
+    "Neonwirkung vor allem in Lichtern/Schattensäumen; " +
+    "Mitteltöne/Fell-Albedo bleiben lesbar (keine harte globale Umfärbung).";
+
+  const neonPrompt = [
+    "Bewusst überzeichnetes NEON-Porträt desselben Haustiers, fotorealistisch, Brust bis Kopf.",
+    neonLight,
+    neonBg,
+    identity,
+    compCommon,
+    compBust,
+    quality,
+  ].join(" ");
+
+  const neonNeg = negCommon + ", hard godrays, laser beams, spotlight rays, high-contrast poster look";
+
+  // Falls du weitere Stile brauchst, kannst du sie später ergänzen.
+  return {
+    neon: { prompt: neonPrompt, negative: neonNeg },
+  };
 }
 
-/** Prompt nur für Stil (Neon); Identitätsschutzhinweise kommen über die Maske */
-function buildNeonPrompt() {
-  return [
-    "Erzeuge einen fotorealistischen Studiolook mit starkem, aber diffusem Neon-Glow-Hintergrund: ",
-    "links kräftiges Cyan/Teal, rechts sattes Magenta/Violett, weicher Verlauf, ",
-    "feiner atmosphärischer Dunst/Schimmer, dezente großflächige Bokeh/Dust-Partikel, kein Text/Logo/Objekte. ",
-    "Additive Rim-Lights entlang der Fellkanten (Cyan links, Magenta rechts), subtil und realistisch, ",
-    "keine harte globale Umfärbung der Mitteltöne des Tiers. ",
-    "Komposition: Motiv mittig, nicht heranzoomen; ausreichend Negativraum für 16:9-Landscape-Crops."
-  ].join("");
-}
+/* ========================= Handler ========================= */
 
-async function callOpenAIEdit(imagePng, maskPng) {
-  const form = new FormData();
-  form.set("model", "gpt-image-1");
-  form.set("image", new File([imagePng], "image.png", { type: "image/png" }));
-  form.set("mask",  new File([maskPng],  "mask.png",  { type: "image/png" }));
-  form.set("prompt", buildNeonPrompt());
-  form.set("n", "1");
-  form.set("size", "1024x1024");
-
-  const r = await fetch("https://api.openai.com/v1/images/edits", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, ...form.headers },
-    body: form
-  });
-  const t = await r.text();
-  let j; try { j = JSON.parse(t); } catch { j = null; }
-  if (!r.ok) throw new Error(j?.error?.message || `HTTP ${r.status}`);
-
-  const item = j?.data?.[0];
-  if (!item) throw new Error("OpenAI returned no image");
-  if (item.b64_json) return Buffer.from(item.b64_json, "base64");
-  if (item.url) {
-    const rr = await fetch(item.url);
-    return Buffer.from(await rr.arrayBuffer());
-  }
-  throw new Error("Unexpected OpenAI response");
-}
-
-/** leichte Midtone-Aufhellung (vermeidet “zu dunkel/golden”) */
-async function mildLift(buf) {
-  return await sharp(buf).modulate({ brightness: 1.06, saturation: 1.02 }).png().toBuffer();
+const ALLOWED = ["neon"]; // bewusst nur Neon freigeschaltet
+function normalizeStyle(s) {
+  if (!s || typeof s !== "string") return null;
+  let v = s.trim().toLowerCase();
+  if (v === "neon ") v = "neon";
+  return v;
 }
 
 export default async function handler(req, res) {
-  cors(res);
+  applyCORS(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).end();
 
+  const DIAG = {};
+  const styleHeaderRaw = Array.isArray(req.headers["x-pfpx-style"])
+    ? req.headers["x-pfpx-style"][0]
+    : req.headers["x-pfpx-style"] || req.headers["x-style"] || "";
+
+  let styleQueryRaw = "";
   try {
+    if (req.query && typeof req.query.style !== "undefined") {
+      styleQueryRaw = Array.isArray(req.query.style) ? req.query.style[0] : String(req.query.style || "");
+    } else if (req.url) {
+      const u = new URL(req.url, "http://localhost");
+      styleQueryRaw = u.searchParams.get("style") || "";
+    }
+  } catch {}
+
+  try {
+    const ctype = (req.headers["content-type"] || "").toLowerCase();
     const SIZE = 1024;
 
-    // --- Defaults (per Request übersteuerbar) ---
-    let compose_margin = 0.42;      // Motiv kleiner => Landscape-sicher
-    let headroom_top_pct = 0.16;    // mehr Luft oben
-    let faceScaleX = 0.58, faceScaleY = 0.70; // Schutzellipse
-    let ringOpacity = 0.55, blurPx = 28;      // weicher Rand
+    // "kleines Motiv" + mehr Headroom:
+    const COMPOSE_MARGIN_DEFAULT = 0.34; // ~36–40% Breite sichtbar
+    const HEADROOM_BIAS = 0.06;          // Motiv etwas nach unten
 
-    // --- Payload parsen ---
-    const ct = (req.headers["content-type"] || "").toLowerCase();
-    let src = null;
+    let sourceBuffer = null;
+    let composeMargin = null;
 
-    if (ct.startsWith("multipart/form-data")) {
-      const m = /boundary=([^;]+)/i.exec(ct);
-      if (!m) return res.status(400).json({ error: "Bad multipart" });
+    let rawStylesField = null;
+    let requestedStyles = null;
+
+    if (ctype.startsWith("multipart/form-data")) {
+      const m = /boundary=([^;]+)/i.exec(ctype);
+      if (!m) return res.status(400).json({ error: "Bad multipart (no boundary)" });
       const { fields, files } = parseMultipart(await readRawBody(req), m[1]);
-      const f = files["file"]; if (!f?.buffer) return res.status(400).json({ error: "No file uploaded" });
-      src = f.buffer;
 
-      if (fields.compose_margin)      compose_margin = Math.max(0.30, Math.min(0.48, parseFloat(fields.compose_margin) || compose_margin));
-      if (fields.headroom_top_pct)    headroom_top_pct = Math.max(0, Math.min(0.28, parseFloat(fields.headroom_top_pct) || headroom_top_pct));
-      if (fields.mask_face_scale_x)   faceScaleX = Math.max(0.40, Math.min(0.85, parseFloat(fields.mask_face_scale_x) || faceScaleX));
-      if (fields.mask_face_scale_y)   faceScaleY = Math.max(0.50, Math.min(0.95, parseFloat(fields.mask_face_scale_y) || faceScaleY));
-      if (fields.mask_ring_opacity)   ringOpacity = Math.max(0, Math.min(1, parseFloat(fields.mask_ring_opacity) || ringOpacity));
-      if (fields.mask_blur_px)        blurPx = Math.max(6, Math.min(64, parseFloat(fields.mask_blur_px) || blurPx));
-    } else if (ct.includes("application/json")) {
+      const f = files["file"];
+      if (!f?.buffer) return res.status(400).json({ error: "No file uploaded" });
+      sourceBuffer = f.buffer;
+
+      if (fields["styles"] != null) {
+        rawStylesField = fields["styles"];
+        try {
+          const t = JSON.parse(fields["styles"]);
+          if (Array.isArray(t)) requestedStyles = t;
+        } catch {}
+      } else if (fields["style"] != null) {
+        rawStylesField = fields["style"];
+        requestedStyles = [String(fields["style"])];
+      }
+
+      if (fields["compose_margin"] != null) {
+        const v = parseFloat(fields["compose_margin"]);
+        if (Number.isFinite(v)) composeMargin = v;
+      }
+    } else if (ctype.includes("application/json")) {
       const body = JSON.parse((await readRawBody(req)).toString("utf8") || "{}");
-      const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/,"");
+      const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/, "");
       if (!b64) return res.status(400).json({ error: "Kein Bild empfangen." });
-      src = Buffer.from(b64, "base64");
+      sourceBuffer = Buffer.from(b64, "base64");
 
-      if (body.compose_margin != null)    compose_margin   = Math.max(0.30, Math.min(0.48, parseFloat(body.compose_margin) || compose_margin));
-      if (body.headroom_top_pct != null)  headroom_top_pct = Math.max(0,    Math.min(0.28, parseFloat(body.headroom_top_pct) || headroom_top_pct));
-      if (body.mask_face_scale_x != null) faceScaleX       = Math.max(0.40, Math.min(0.85, parseFloat(body.mask_face_scale_x) || faceScaleX));
-      if (body.mask_face_scale_y != null) faceScaleY       = Math.max(0.50, Math.min(0.95, parseFloat(body.mask_face_scale_y) || faceScaleY));
-      if (body.mask_ring_opacity != null) ringOpacity      = Math.max(0,    Math.min(1,    parseFloat(body.mask_ring_opacity) || ringOpacity));
-      if (body.mask_blur_px != null)      blurPx           = Math.max(6,    Math.min(64,   parseFloat(body.mask_blur_px) || blurPx));
+      if (Array.isArray(body.styles)) {
+        rawStylesField = JSON.stringify(body.styles);
+        requestedStyles = body.styles;
+      } else if (typeof body.style === "string") {
+        rawStylesField = body.style;
+        requestedStyles = [body.style];
+      }
+
+      if (body.compose_margin != null) {
+        const v = parseFloat(body.compose_margin);
+        if (Number.isFinite(v)) composeMargin = v;
+      }
     } else {
       return res.status(415).json({ error: "Unsupported Content-Type" });
     }
 
-    // 1) Motiv kleiner + Headroom
-    const placed = await placeOnCanvas(src, SIZE, { composeMargin: compose_margin, headroomTopPct: headroom_top_pct });
+    // Diagnose-Rohdaten
+    DIAG.request_styles_sent_raw = rawStylesField ?? null;
 
-    // 2) Schutzmaske (Gesicht + oberer Torso) mit weicher Kante
-    const mask = await buildSoftMask(SIZE, placed, {
-      faceScaleX, faceScaleY, ringOpacity, blurPx
+    // Fallback aus Header/Query
+    if ((!requestedStyles || !requestedStyles.length) && styleHeaderRaw) {
+      requestedStyles = [String(styleHeaderRaw)];
+      rawStylesField = String(styleHeaderRaw);
+    }
+    if ((!requestedStyles || !requestedStyles.length) && styleQueryRaw) {
+      requestedStyles = [String(styleQueryRaw)];
+      rawStylesField = String(styleQueryRaw);
+    }
+
+    // Normalisieren
+    let normalized = Array.isArray(requestedStyles)
+      ? requestedStyles.map(normalizeStyle).filter(Boolean)
+      : [];
+    normalized = Array.from(new Set(normalized));
+    let filtered = normalized.filter((s) => ALLOWED.includes(s));
+
+    DIAG.request_styles_array = normalized;
+    DIAG.style_header = styleHeaderRaw || "";
+    DIAG.style_query = styleQueryRaw || "";
+
+    if (filtered.length === 0) {
+      filtered = ["neon"]; // Standard
+      DIAG.fallback_used = true;
+    }
+
+    // Bild vorbereiten: 1024x1024 transparent PNG
+    const inputPng = await sharp(sourceBuffer)
+      .resize(SIZE, SIZE, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .png()
+      .toBuffer();
+
+    const margin = composeMargin == null ? COMPOSE_MARGIN_DEFAULT : composeMargin;
+    DIAG.compose_margin = margin;
+
+    const imageForEdit = await makeOutpaintCanvas(inputPng, SIZE, margin, HEADROOM_BIAS);
+
+    const prompts = buildPrompts();
+
+    const previews = {};
+    const failed = [];
+    for (const style of filtered) {
+      await sleep(120 + Math.round(Math.random() * 240));
+
+      const form = new FormData();
+      form.set("model", "gpt-image-1");
+      form.set("image", new File([imageForEdit], "image.png", { type: "image/png" }));
+
+      // Wichtig: prompt & negative zusammenführen (gpt-image-1 hat kein eigenes negative-Feld)
+      const p = prompts[style]?.prompt || "";
+      const n = prompts[style]?.negative ? ` Negative prompt: ${prompts[style].negative}` : "";
+      form.set("prompt", `${p}${n}`);
+
+      form.set("n", "1");
+      form.set("size", "1024x1024");
+
+      try {
+        const outUrl = await fetchOpenAIWithRetry(form, { retries: 4, baseDelayMs: 1000 });
+        previews[style] = outUrl;
+      } catch (e) {
+        console.error(`❌ Stil '${style}' fehlgeschlagen:`, String(e));
+        failed.push(style);
+      }
+    }
+
+    DIAG.upstream_previews_keys = Object.keys(previews);
+    DIAG.upstream_failed = failed;
+    DIAG.version = VERSION;
+    DIAG.endpoint = req.url || "";
+
+    const finalStyle = (filtered && filtered[0]) || "";
+
+    if (Object.keys(previews).length === 0) {
+      setDiagHeaders(res, {
+        styleHeader: styleHeaderRaw,
+        styleQuery: styleQueryRaw,
+        normalized,
+        finalStyle,
+        version: VERSION,
+      });
+      return res.status(502).json({ success: false, error: "Alle Stile fehlgeschlagen.", diag: DIAG });
+    }
+
+    setDiagHeaders(res, {
+      styleHeader: styleHeaderRaw,
+      styleQuery: styleQueryRaw,
+      normalized,
+      finalStyle,
+      version: VERSION,
     });
 
-    // 3) Edit-Call an OpenAI (Hintergrund + Ränder werden neu gerendert)
-    let out = await callOpenAIEdit(placed.canvas, mask);
-
-    // 4) leichte Midtone-Lift (optional)
-    out = await mildLift(out);
-
-    res.setHeader("x-pfpx-version", VERSION);
     return res.status(200).json({
       success: true,
-      previews: { neon: `data:image/png;base64,${out.toString("base64")}` },
-      compose_margin,
-      headroom_top_pct,
-      mask: { faceScaleX, faceScaleY, ringOpacity, blurPx },
-      version: VERSION
+      previews,
+      failed,
+      compose_margin: margin,
+      diag: DIAG,
+      version: VERSION,
     });
   } catch (err) {
-    console.error("generate-fix:", err);
-    return res.status(500).json({ success: false, error: String(err?.message || err) });
+    console.error("generate-fix (overdraw) error:", err);
+    try {
+      setDiagHeaders(res, {
+        styleHeader: styleHeaderRaw,
+        styleQuery: styleQueryRaw,
+        normalized: [],
+        finalStyle: "",
+        version: VERSION,
+      });
+    } catch {}
+    return res.status(500).json({ error: "Interner Serverfehler", diag: null, version: VERSION });
   }
 }
