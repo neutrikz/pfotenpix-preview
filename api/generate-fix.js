@@ -139,163 +139,121 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
 }
 
 
+/* ==============================================================
+   PFPX – Prompt-Baustein + 1-Pass Pipeline (drop-in für generate-fix)
+   - konservativ für Wiedererkennbarkeit (Landmark-Lock)
+   - Quer/Hoch tauglich (viel Negativraum per Kompositionshinweis)
+   - NEON ebenfalls 1-Pass
+   ============================================================== */
 
-/* =========================================================
-   PFPX — 1-Pass Rendering (inkl. NEON) mit Likeness-Schutz
-   - keine Zusatzdateien, keine Exports
-   - universelle Komposition (viel Negativraum)
-   - konservative Strength/CFG für Geometrie-Treue
-========================================================= */
-
-/** Globale Negativ-Prompts (Artefakte/Überstil verhindern) */
-const NEGATIVE_PROMPT = [
-  // Stil/Look
-  "cartoon, anime, chibi, 3D render, lowpoly, vector",
-  "oil painting, watercolor, sketch, drawing, caricature, oversharpened",
-  "plastic skin, waxy, doll-like, porcelain, uncanny",
-  // Geometrie/Anatomie
-  "wrong breed, breed change, altered skull, distorted muzzle, changed inter-ocular distance",
-  "huge eyes, tiny eyes, cross-eyed, asymmetrical eyes, extra eyes, extra limbs",
-  "mutated, deformed, disfigured, smudged, blurry, noisy",
-  // Farbe/Licht
-  "harsh global recoloring of midtones, full-body color wash, blown highlights, crushed blacks",
-  // Komposition
-  "tight crop, macro close-up, extreme close-up, cropped ears, cutoff whiskers, border vignette, frame, text, logo"
+/** Negatives: verhindert Cartoon/Überzeichnung/Geometrie-Shift */
+const PFPX_NEG = [
+  "cartoon, anime, 3D render, vector, painting, sketch",
+  "plastic/waxy/doll-like skin, porcelain, uncanny",
+  "breed change, altered skull, reshaped muzzle, wrong mask pattern",
+  "changed inter-ocular distance, bigger eyes, closer eyes, cross-eyed, asymmetrical eyes, extra eyes",
+  "tight crop, macro close-up, cropped ears, cut whiskers, frame, border, text, logo",
+  "global midtone recolor, full-body color wash, blown highlights, crushed blacks",
+  "blur, noise, smudge, over-sharpen, halo artifacts"
 ].join(", ");
 
-/** Prompts je Stil — mit Identitäts- und Kompositions-Schutz */
-function buildPrompts() {
-  // Gemeinsame Bausteine
+/** Stil-Prompts (konservativ; Landmark/Coat/Komposition überall identisch stark) */
+function buildPrompts(){
   const comp =
-    "Composition: subject perfectly centered and fully visible; the animal occupies about 18–24% of the frame; keep ~35–45% negative space on each side; no tight crop; no borders; background seamlessly extended for future cropping.";
+    "Composition: subject perfectly centered and fully visible; animal occupies ~18–24% of frame; keep ~35–45% negative space on all sides; no tight crop; no borders; background seamlessly extended for future crops.";
+
   const identity =
-    "Identity lock: reproduce the exact animal from the input photo; preserve breed-specific skull shape, wrinkle layout, ear base width, ear size, muzzle length/width ratio, nose shape; keep the original inter-ocular distance precisely; keep eye color, eye size and spacing realistic.";
+    "Identity lock: replicate the exact animal from the photo; preserve face landmarks 1:1 — skull silhouette, ear base width and ear size, muzzle length/width ratio, nose shape and position, mask/forehead wrinkle layout; preserve the original inter-ocular distance and eye size; natural eye colour and catchlights.";
+
   const coat =
-    "Coat fidelity: keep the natural midtone albedo of the fur visible (chest, legs, mask) — stylization only in highlights/shadows; do not recolor midtones; preserve characteristic markings and mask edges.";
+    "Coat fidelity: keep natural midtone albedo (chest, legs, mask) readable; apply style mainly in highlights/shadows; do not recolor midtones; keep characteristic markings crisp.";
+
   const quality =
-    "Studio-grade quality, photorealistic micro-detail, crisp whiskers, sharp fur edges, natural catchlights, clean sRGB, gentle local tone mapping.";
+    "Photorealistic studio detail, sharp whiskers, crisp fur edges, gentle local tone mapping, clean sRGB.";
 
-  // ——— NEON (1-Pass) ———
-  const neon = [
-    "Premium neon portrait: dual rim-lighting with additive cyan/turquoise from camera-left and saturated magenta/pink from camera-right; optional warm orange kicker in specular highlights.",
-    "Lighting is additive (screen/lighten look): strong glow and halation along contours, but midtones remain readable — do not flood-fill the whole coat.",
-    "Background: dark indigo→violet gradient with very subtle texture; no hard shapes.",
-    identity, coat, comp, quality
-  ].join(" ");
+  return {
+    neon: [
+      "Premium neon portrait: dual additive rim lights — cyan/turquoise from camera-left, saturated magenta/pink from camera-right; optional warm orange kicker in speculars.",
+      "Lighting is additive (screen/lighten look) with halo/halation along contours, but midtones remain natural; background: dark indigo→violet gradient with subtle texture.",
+      identity, coat, comp, quality
+    ].join(" "),
 
-  // Weitere Stile (unverändert/moderat)
-  const cinematic = [
-    "Cinematic portrait with gentle teal/orange grade, fine film grain, soft bloom on highlights, light anamorphic bokeh in background.",
-    "Deep but detailed blacks; slight vignette; natural fur tones in midtones.",
-    identity, coat, comp, quality
-  ].join(" ");
+    cinematic: [
+      "Cinematic grade, subtle teal/orange, fine film grain, soft highlight bloom; deep but detailed blacks; slight vignette.",
+      identity, coat, comp, quality
+    ].join(" "),
 
-  const lowkey = [
-    "Dramatic low-key studio on graphite/near-black; controlled Rembrandt/edge lighting.",
-    "Face and chest remain clearly readable; no silhouette; subtle bloom; no crushed blacks.",
-    identity, coat, comp, quality
-  ].join(" ");
+    lowkey: [
+      "Dramatic low-key studio on graphite/near-black with controlled Rembrandt/edge lighting; face & chest readable; no silhouette.",
+      identity, coat, comp, quality
+    ].join(" "),
 
-  const highkey = [
-    "Bright airy high-key portrait; very soft large light sources; almost white backdrop; gentle glow.",
-    "Clean contours, lively eyes, clear fur pattern.",
-    identity, coat, comp, quality
-  ].join(" ");
+    highkey: [
+      "Bright airy high-key portrait with large soft sources and near-white background; gentle glow.",
+      identity, coat, comp, quality
+    ].join(" "),
 
-  const pastell = [
-    "Elegant pastel look: matte, creamy background gradients (sage/sand/blush), soft diffuse light.",
-    "Slight painterly texture only in the background; face/eyes remain naturally sharp.",
-    identity, coat, comp, quality
-  ].join(" ");
+    pastell: [
+      "Elegant pastel look: matte creamy gradients (sage/sand/blush) with soft diffuse light; slight painterly texture only in background.",
+      identity, coat, comp, quality
+    ].join(" "),
 
-  const vintage = [
-    "Timeless vintage tone: subtle ivory/soft sepia, fine analog grain, restrained halation.",
-    "Paper/fiber character only in the background; midtone fur colors remain believable.",
-    identity, coat, comp, quality
-  ].join(" ");
+    vintage: [
+      "Timeless vintage: subtle ivory/soft sepia, fine analog grain, restrained halation; paper/fiber hint only in background.",
+      identity, coat, comp, quality
+    ].join(" "),
 
-  const steampunk = [
-    "Warm steampunk tonality: brass/copper palette in the background (soft industrial bokeh).",
-    "Warm tungsten key + cooler rim; stylized yet no hard midtone recolor on the coat.",
-    identity, coat, comp, quality
-  ].join(" ");
+    steampunk: [
+      "Warm steampunk tonality: brass/copper palette in background (soft industrial bokeh); warm tungsten key plus a cooler rim.",
+      identity, coat, comp, quality
+    ].join(" "),
 
-  const natural = [
-    "Refined neutral studio look: balanced colors, soft backdrop gradient, subtle clarity.",
-    "Light vignette/glow for depth; overall realistic and calm.",
-    identity, coat, comp, quality
-  ].join(" ");
-
-  return { neon, cinematic, lowkey, highkey, pastell, vintage, steampunk, natural };
+    natural: [
+      "Refined neutral studio look: balanced color, soft backdrop gradient, subtle clarity; light vignette for depth.",
+      identity, coat, comp, quality
+    ].join(" "),
+  };
 }
 
-/** Ein-Pass-Renderer — nutzt moderate Stärke/CFG für Likeness */
-async function runPipeline(image, style, seed, render) {
+/**
+ * 1-Pass Pipeline (auch für NEON). Erwartet eine Render-Funktion:
+ *   render({ image, prompt, negative, strength, cfg, seed, width, height })
+ * Gibt das Bildobjekt/Buffer/Base64 zurück (abhängig von deinem Renderer).
+ */
+async function runPipeline(image, style, seed, render){
   const PROMPTS = buildPrompts();
 
-  // Universelles Portrait-Format mit viel Negativraum
-  // (lässt spätere Crops auf Hoch/Quer zu)
-  const BASE_W = 1024;
-  const BASE_H = 1365; // 3:4 / 0.75 — bewährt für beide Crops
+  // 3:4 – viel Negativraum; universell croppbar (Hoch/Quer)
+  const WIDTH  = 1024;
+  const HEIGHT = 1365;
 
-  // Moderate Defaults (Likeness > Stil)
-  let strength = 0.40; // 0.36–0.44 → je niedriger, desto mehr Originalgeometrie
-  let cfg      = 3.10; // 2.8–3.2 hält Farben/Licht in Schach
+  // Landmark-freundliche Defaults
+  let strength = 0.34; // 0.30–0.38 hält Geometrie stabil
+  let cfg      = 2.9;  // 2.6–3.2 verhindert Überfärbung/Überkontrast
 
-  // Stilspezifische Feinanpassungen
-  switch (style) {
-    case "neon":
-      strength = 0.40;
-      cfg      = 3.00;
-      break;
-    case "cinematic":
-      strength = 0.38;
-      cfg      = 3.00;
-      break;
-    case "lowkey":
-      strength = 0.38;
-      cfg      = 3.00;
-      break;
-    case "highkey":
-      strength = 0.36;
-      cfg      = 3.10;
-      break;
-    case "pastell":
-      strength = 0.38;
-      cfg      = 3.10;
-      break;
-    case "vintage":
-      strength = 0.38;
-      cfg      = 3.00;
-      break;
-    case "steampunk":
-      strength = 0.40;
-      cfg      = 3.00;
-      break;
-    case "natural":
-    default:
-      strength = 0.36;
-      cfg      = 3.00;
-      break;
-  }
+  if (style === 'neon'){ strength = 0.36; cfg = 2.9; }
 
   const prompt = PROMPTS[style] || PROMPTS.natural;
 
-  // EINER Render-Aufruf (kein Prepass)
   const out = await render({
     image,
     prompt,
-    negative: NEGATIVE_PROMPT,
+    negative: PFPX_NEG,
     strength,
     cfg,
     seed,
-    width: BASE_W,
-    height: BASE_H
+    width: WIDTH,
+    height: HEIGHT
   });
 
-  return out.image;
+  // Falls dein Renderer anders zurückgibt, hier anpassen
+  return out?.image ?? out;
 }
 
+/* ===== Exports (ESM & CJS kompatibel) ===== */
+export { PFPX_NEG, buildPrompts, runPipeline };
+// CJS-Fallback (ignoriert in ESM-Umgebungen)
+try { if (typeof module !== "undefined") module.exports = { PFPX_NEG, buildPrompts, runPipeline }; } catch {}
 
 
 
