@@ -142,105 +142,142 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
 
 
 
-// generate-fix.js — Prompt-Builder + negativer Prompt (benannter Export)
+/**
+ * PFPX – Prompt-Baustein (Half-Portrait + querformat-tauglich + Neon-Glow)
+ * - Motiv bewusst kleiner (Landscape-Crop sicher)
+ * - Immer Brust-bis-Kopf (Half-Portrait), kein Unterkörper
+ * - Stärkere Identitäts-Locks (Augenabstand, Fellmuster etc.)
+ * - Neon: weicher Glow-Hintergrund (ohne harte Strahlen)
+ *
+ * Nutzungsweise im Generator:
+ *   const { prompt, negative } = buildPrompts().neon;
+ *   // oder .cinematic, .lowkey, etc.
+ */
 
-/** Negativer Prompt – optional von deiner Pipeline mitgeschickt */
-export const PFPX_NEG =
-  "wrong anatomy, breed morphing, changed eye distance, changed eye shape, distorted proportions, " +
-  "cartoon, anime, plastic fur, waxy skin, oversoften, blur, sharpen halos, posterization, banding, " +
-  "strong color wash on midtones, harsh light beams, lens flare, text, logo, watermark, " +
-  "extra limbs, duplicated eyes";
+function buildPrompts () {
+  /* ========= Komposition & Identität ========= */
 
-/** Prompts mit starkem Identity-Lock (Augenabstand, Masken/Abzeichen, Brustfleck etc.) */
-export function buildPrompts () {
-  // Universelle Komposition – für Hoch/Quer croppbar
-  const comp =
-    "Komposition: Motiv streng mittig, vollständig sichtbar. " +
-    "Motivgröße ≤ 55% der Bildhöhe und ≤ 50% der Bildbreite; " +
-    "auf allen Seiten 25–40% Negativraum. Kein enger Beschnitt, keine Rahmen; " +
-    "Hintergrund nahtlos erweitern.";
+  // Querformat-tauglich: bewusst kleiner, viel Negativraum
+  const compCommon =
+    "Komposition: streng mittig, komplette Kopfform sichtbar, nicht heranzoomen. " +
+    "Motiv ≤ 42–45% der Bildbreite und ≤ 45–48% der Bildhöhe; rundum 30–40% Negativraum. " +
+    "Genug Headroom & Sideroom für spätere Crops (Portrait ODER Landscape). " +
+    "Keine engen Beschnitte, keine Rahmen, keine schrägen Perspektiven.";
 
-  // Harter Identity-Lock: Proportionen & Abzeichen exakt übernehmen
-  const identityLock =
-    "Exakte Wiedererkennbarkeit des realen Haustiers aus der Vorlage. " +
-    "Anatomie NICHT verändern: Augenabstand (Pupille-zu-Pupille), Augenform/-größe, Nasenbreite/-position, " +
-    "Stop/Maske, Stirn-/Backenkontur, Maullänge, Jowl-/Schnauzenvolumen, Ohrform und Ohrwinkel exakt beibehalten. " +
-    "Fell in den MITTELTÖNEN farblich und strukturell wie im Foto; charakteristische Abzeichen 1:1 übernehmen " +
-    "(Blesse/Breite, Brustfleck-Form, Maskenkante, weiße Socken/Höhe an den Läufen, Sattel/Brindle/Tricolor-Grenzen). " +
-    "Asymmetrien und kleine Unregelmäßigkeiten unbedingt erhalten. Augenfarbe natürlich; klare Catchlights erlaubt. " +
-    "Kein Rasse-Morphing, keine Cartoonisierung, keine Glättung der Fellstruktur.";
+  // Erzwingt Half-Portrait unabhängig vom Original (Sitzen/Liegen egal)
+  const compBust =
+    "Framing: Half-Portrait (Brust bis Kopf). Bildende ungefähr auf Höhe der oberen Brust; " +
+    "keine Pfoten/Beine/Unterkörper im Bild, kein Ganzkörper, kein liegendes Vollformat. " +
+    "Kopf und Brust vorn klar, Hintergrund weich.";
 
-  // Neon soll nur additiv auf Lichtern liegen – Mitteltöne schützen
-  const neonDiscipline =
-    "Neon ausschließlich ADDITIV auf Highlights/Rim-Kanten (Screen/Lighten, ≤60% Opazität). " +
-    "Mitteltöne/Fell-Albedo NICHT global umfärben (Hue-Shift in Mitteltönen < ±6°). " +
-    "Weiße/helle Partien bleiben neutral; schwarze/dunkle Partien bleiben dunkel. " +
-    "Fellkanten und Schnurrhaare scharf, kein Oversoften, keine Halos.";
+  // Stärkere Wiedererkennbarkeit (Augenabstand, Fellmuster etc.)
+  const identity =
+    "Wiedererkennbarkeit: dasselbe reale Tier wie auf der Vorlage. " +
+    "Gesichtsproportionen exakt beibehalten: Augenabstand, Augenform, Ohren-Set/Neigung, " +
+    "Schädelbreite, Nasenlänge/-form. Fellfarbe/-zeichnung an Mitteltönen orientiert " +
+    "(keine harte globale Umfärbung); charakteristische Abzeichen, Maske, Stirnfalten und " +
+    "weiße/helle Bereiche originalgetreu; nichts dazuerfinden, nichts wegretuschieren. " +
+    "Keine Accessoires, keine Typografie/Logos, keine zusätzlichen Objekte.";
 
-  // Qualität/Technik
   const quality =
-    "Studioqualität, fotorealistische Details, differenzierte Mikrofell-Struktur, " +
-    "sanfte lokale Tonwertsteuerung, saubere Kanten, sRGB. 85-mm-Porträtcharakter, subtile Vignette; keine Artefakte.";
+    "Studioqualität, sRGB, fein detaillierte Fellstruktur und Schnurrhaare, saubere Kanten, " +
+    "sanfte lokale Tonwertsteuerung, kein Überschärfen, kein Wachslook.";
+
+  /* ========= Negativ-Liste (global) ========= */
+
+  const negCommon =
+    "full body, whole body, legs, paws, lower body, lying, extreme close up, tight crop, " +
+    "fisheye, wide distortion, caricature, chibi, anime, 3d render, painting, oversaturated, " +
+    "posterized, watercolor, oil paint, lowres, jpeg artifacts, blurry, noise, banding, " +
+    "wrong breed, wrong coat color, wrong markings, mismatched eye spacing, " +
+    "asymmetric face, deformed anatomy, duplicate nose, extra ears";
+
+  /* ========= Stil-spezifisch ========= */
+
+  // — NEON: weicher Glow-Hintergrund + additive Rim-Lights, Mitteltöne bleiben lesbar
+  const neonBg =
+    "Hintergrund: weicher Neon-Glow-Verlauf von tiefem Indigo zu Violett-Magenta, " +
+    "subtiler volumetrischer Dunst/Schimmer, fein verteilte Dust/Bokeh-Partikel, " +
+    "keine harten Strahlen, keine Laser/Godrays, keine Props.";
+
+  const neonLight =
+    "Licht: additive Rim-Lights – links kräftiges Cyan/Teal, rechts sattes Magenta/Pink; " +
+    "optional minimaler warmer Orange-Kicker in den Highlights. " +
+    "Neon wirkt vor allem an Kanten/Schattensäumen und in Lichtern; " +
+    "Mitteltöne/Fell-Albedo bleiben erkennbar (weiße/creme Bereiche bleiben neutral). " +
+    "Sanfter Bloom/Halation erlaubt.";
+
+  const neonPrompt = [
+    "Galerie-taugliches Neon-Portrait desselben Tieres, fotorealistisch, Brust bis Kopf.",
+    neonLight,
+    neonBg,
+    identity,
+    compCommon,
+    compBust,
+    quality
+  ].join(" ");
+
+  const neonNeg =
+    negCommon +
+    ", hard godrays, laser beams, spotlight rays, high contrast poster look";
+
+  // — Weitere Stile (unverändert, aber ebenfalls Half-Portrait + querformat-tauglich)
+  const cinematic = [
+    "Deutlich filmischer Look mit sanfter Teal/Orange-Gradierung, feinem Filmkorn, " +
+      "zarten anamorphischen Bokeh-Lichtern im Hintergrund, leichter Bloom.",
+    "Schwärzen tief mit Zeichnung; Fellmuster natürlich; Mitteltöne nicht hart umfärben.",
+    identity, compCommon, compBust, quality
+  ].join(" ");
+
+  const lowkey = [
+    "Dramatisches Low-Key-Studio auf tiefem Graphit/Schwarz mit gerichteter Edge/Rembrandt-Lichtführung.",
+    "Motiv klar heller als Hintergrund; Gesicht/Brust deutlich lesbar; dezenter Bloom; nichts säuft ab.",
+    identity, compCommon, compBust, quality
+  ].join(" ");
+
+  const highkey = [
+    "Strahlendes High-Key-Portrait: fast weißer Hintergrund, große weiche Lichtquellen, sehr sanfte Schatten, leichter Glow.",
+    "Airy und modern; Konturen sauber, Augen lebendig, Fellzeichnung klar.",
+    identity, compCommon, compBust, quality
+  ].join(" ");
+
+  const pastell = [
+    "Eleganter Pastell-Look: matte, cremige Hintergrundverläufe (Sage/Sand/Blush) mit diffusem weichem Licht.",
+    "Leichte painterly-Textur im Hintergrund erlaubt; Gesicht/Augen natürlich scharf.",
+    identity, compCommon, compBust, quality
+  ].join(" ");
+
+  const vintage = [
+    "Zeitloser Vintage-Look: zarter Elfenbein-/leichter Sepia-Ton, feines analoges Grain, behutsame Halation.",
+    "Hintergrund darf Papier-/Fasercharakter andeuten; Fellfarben in Mitteltönen glaubwürdig.",
+    identity, compCommon, compBust, quality
+  ].join(" ");
+
+  const steampunk = [
+    "Warmer Steampunk-Tonwert mit Messing/Kupfer-Palette im unscharfen Hintergrund-Bokeh (nur als Stimmung).",
+    "Warmes Wolfram-Keylight + kühleres Rim; Mitteltöne am Fell nicht hart umfärben.",
+    identity, compCommon, compBust, quality
+  ].join(" ");
+
+  const natural = [
+    "Edler Neutral-Studio-Look: ausgewogene Farben, sanfter Verlaufshintergrund, subtile Klarheit.",
+    "Leichte Vignette/Glow für Tiefe, insgesamt ruhig und realistisch.",
+    identity, compCommon, compBust, quality
+  ].join(" ");
 
   return {
-    // —— NEON (Glow-Hintergrund + strenges Identity-Lock) ——
-    neon: [
-      "Galerietauglicher Neon-Look mit balancierten Rim-Lichtern: " +
-      "links kräftiges Cyan/Türkis, rechts sattes Magenta/Pink; " +
-      "optional dezenter warmer Orange-Kicker nur in den Highlights.",
-      neonDiscipline,
-      // Hintergrund: weicher Glow (kein Strahlen-Fächer)
-      "Hintergrund: weicher Indigo-zu-Pflaume-Farbverlauf mit deutlich sichtbarem Glow, " +
-      "atmosphärischer Dunst/Bokeh, KEINE harten Lichtstrahlen oder geometrischen Muster.",
-      identityLock,
-      comp,
-      quality
-    ].join(" "),
-
-    // —— Weitere Stile (falls genutzt) ——
-    cinematic: [
-      "Filmischer Look, moderate Teal/Orange-Gradierung, feines Filmkorn, sanfter Bloom. " +
-      "Schwärzen tief mit Zeichnung; Mitteltöne natürlich.",
-      identityLock, comp, quality
-    ].join(" "),
-
-    lowkey: [
-      "Dramatisches Low-Key-Studio auf tiefem Graphit/Schwarz mit Rembrandt/Edge-Licht. " +
-      "Gesicht/Brust klar lesbar; kein Absaufen.",
-      identityLock, comp, quality
-    ].join(" "),
-
-    highkey: [
-      "Helles High-Key-Porträt: sehr weiche große Lichtquellen, fast weißer Hintergrund, " +
-      "sanfte Schatten, leichter Glow.",
-      identityLock, comp, quality
-    ].join(" "),
-
-    pastell: [
-      "Eleganter Pastell-Look: matte, cremige Verläufe (Sage/Sand/Blush), diffuses weiches Licht; " +
-      "painterly-Textur nur im Hintergrund.",
-      identityLock, comp, quality
-    ].join(" "),
-
-    vintage: [
-      "Zarter Elfenbein/Sepia-Ton, feines analoges Grain, behutsame Halation; " +
-      "Hintergrund darf Papier/Faser andeuten.",
-      identityLock, comp, quality
-    ].join(" "),
-
-    steampunk: [
-      "Warmer Steampunk-Ton ausschließlich im HINTERGRUND (unscharfes Messing/Kupfer-Bokeh). " +
-      "Wolfram-Key + kühlerer Rim; Mitteltöne am Fell unverfälscht.",
-      identityLock, comp, quality
-    ].join(" "),
-
-    natural: [
-      "Neutraler Studio-Look: ausgewogene Farben, sanfter Verlaufshintergrund, subtile Klarheit.",
-      identityLock, comp, quality
-    ].join(" ")
+    neon:     { prompt: neonPrompt,     negative: neonNeg },
+    cinematic:{ prompt: cinematic,      negative: negCommon },
+    lowkey:   { prompt: lowkey,         negative: negCommon },
+    highkey:  { prompt: highkey,        negative: negCommon },
+    pastell:  { prompt: pastell,        negative: negCommon },
+    vintage:  { prompt: vintage,        negative: negCommon },
+    steampunk:{ prompt: steampunk,      negative: negCommon },
+    natural:  { prompt: natural,        negative: negCommon }
   };
 }
 
+export default buildPrompts;
 
 
 
