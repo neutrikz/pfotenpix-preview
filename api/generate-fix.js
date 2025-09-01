@@ -140,179 +140,161 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
 
 
 
+/* =========================================================
+   PFPX — 1-Pass Rendering (inkl. NEON) mit Likeness-Schutz
+   - keine Zusatzdateien, keine Exports
+   - universelle Komposition (viel Negativraum)
+   - konservative Strength/CFG für Geometrie-Treue
+========================================================= */
 
-/* ============================================================
- * PFPX – Prompt & Pipeline v3
- *  - NEON: Zoom-out/Outpaint-Pass -> Neon-Style-Pass
- *  - Mehr Wiedererkennbarkeit (Augenabstand, Fellmittelton)
- *  - universell für Hoch/Quer (mehr negativer Raum)
- * ============================================================ */
-
-/* ---------- Gemeinsame Negativ-Keywords ---------- */
+/** Globale Negativ-Prompts (Artefakte/Überstil verhindern) */
 const NEGATIVE_PROMPT = [
-  // Framing/Fit
-  'close-up, extreme close-up, tight crop, head-only crop, zoomed in, cropped ears, cropped chin, cut off head',
-  // Anatomie/Artefakte
-  'mutated, extra limbs, fused limbs, deformed, duplicate features, asymmetrical face',
-  // Stil-Fehler
-  'posterized, plastic skin, over-smooth, excessive sharpening, watercolor, line-art, cartoon',
-  // Licht/Text
-  'hard specular hotspot, blown highlights, heavy motion blur, strong banding, text, logo, watermark'
-].join(', ');
+  // Stil/Look
+  "cartoon, anime, chibi, 3D render, lowpoly, vector",
+  "oil painting, watercolor, sketch, drawing, caricature, oversharpened",
+  "plastic skin, waxy, doll-like, porcelain, uncanny",
+  // Geometrie/Anatomie
+  "wrong breed, breed change, altered skull, distorted muzzle, changed inter-ocular distance",
+  "huge eyes, tiny eyes, cross-eyed, asymmetrical eyes, extra eyes, extra limbs",
+  "mutated, deformed, disfigured, smudged, blurry, noisy",
+  // Farbe/Licht
+  "harsh global recoloring of midtones, full-body color wash, blown highlights, crushed blacks",
+  // Komposition
+  "tight crop, macro close-up, extreme close-up, cropped ears, cutoff whiskers, border vignette, frame, text, logo"
+].join(", ");
 
-/* ---------- Prompt-Bausteine ---------- */
-function buildPrompts () {
-  // Komposition: bewusst "kleiner" – für universelle Crops
+/** Prompts je Stil — mit Identitäts- und Kompositions-Schutz */
+function buildPrompts() {
+  // Gemeinsame Bausteine
   const comp =
-    'Composition: full head incl. both ears and shoulders clearly visible. Subject occupies only ~18–22% of the frame; leave generous empty margins (≈40–45% negative space) on all sides. No tight crop, no zoom. Seamless extended background.';
-
-  // Identität/Landmarken – Fellmitteltöne lesen lassen
+    "Composition: subject perfectly centered and fully visible; the animal occupies about 18–24% of the frame; keep ~35–45% negative space on each side; no tight crop; no borders; background seamlessly extended for future cropping.";
   const identity =
-    'Identity: exactly the same real pet as the reference. Preserve eye shape and distance, muzzle width, nose, ear shape, whisker pads and mask pattern. Keep fur midtones and markings readable; do not recolor the midtone albedo.';
-
+    "Identity lock: reproduce the exact animal from the input photo; preserve breed-specific skull shape, wrinkle layout, ear base width, ear size, muzzle length/width ratio, nose shape; keep the original inter-ocular distance precisely; keep eye color, eye size and spacing realistic.";
+  const coat =
+    "Coat fidelity: keep the natural midtone albedo of the fur visible (chest, legs, mask) — stylization only in highlights/shadows; do not recolor midtones; preserve characteristic markings and mask edges.";
   const quality =
-    'Studio-grade, print-ready detail, crisp edges, clean sRGB tonality, subtle local contrast; no heavy NR or oversharpen.';
+    "Studio-grade quality, photorealistic micro-detail, crisp whiskers, sharp fur edges, natural catchlights, clean sRGB, gentle local tone mapping.";
 
-  // *** NEON (2-pass: erst neutraler Zoom-out, danach Neon-Licht) ***
-  const neon_prepass =
-    'Neutral zoom-out framing pass. Keep natural fur colors and markings, add only a soft, neutral gradient background (indigo to deep violet) with mild bloom; no strong colored rims yet.';
+  // ——— NEON (1-Pass) ———
+  const neon = [
+    "Premium neon portrait: dual rim-lighting with additive cyan/turquoise from camera-left and saturated magenta/pink from camera-right; optional warm orange kicker in specular highlights.",
+    "Lighting is additive (screen/lighten look): strong glow and halation along contours, but midtones remain readable — do not flood-fill the whole coat.",
+    "Background: dark indigo→violet gradient with very subtle texture; no hard shapes.",
+    identity, coat, comp, quality
+  ].join(" ");
 
-  const neon_style =
-    'Gallery neon look: strong additive rim lights – left cyan/turquoise, right magenta/pink, optional warm orange kicker on highlights. Use additive/screen glow mostly on edges; keep midtone albedo of fur readable. Clear eyes with colored catchlights, razor-sharp whiskers/fur edges. Soft halation and faint atmospheric haze.';
+  // Weitere Stile (unverändert/moderat)
+  const cinematic = [
+    "Cinematic portrait with gentle teal/orange grade, fine film grain, soft bloom on highlights, light anamorphic bokeh in background.",
+    "Deep but detailed blacks; slight vignette; natural fur tones in midtones.",
+    identity, coat, comp, quality
+  ].join(" ");
 
-  return {
-    neon: {
-      // Wir liefern beide Sätze – Prepass + Stilpass
-      pre: [identity, comp, quality, neon_prepass].join(' '),
-      style: [identity, comp, quality, neon_style].join(' ')
-    },
+  const lowkey = [
+    "Dramatic low-key studio on graphite/near-black; controlled Rembrandt/edge lighting.",
+    "Face and chest remain clearly readable; no silhouette; subtle bloom; no crushed blacks.",
+    identity, coat, comp, quality
+  ].join(" ");
 
-    // Ein-Pass-Stile (falls du weitere nutzt)
-    cinematic: [
-      'Cinematic grading with gentle teal/orange split, fine film grain, mild bloom and anamorphic bokeh in the background.',
-      'Deep blacks with detail, slight vignette; natural fur pattern; keep midtones neutral.',
-      identity, comp, quality
-    ].join(' '),
+  const highkey = [
+    "Bright airy high-key portrait; very soft large light sources; almost white backdrop; gentle glow.",
+    "Clean contours, lively eyes, clear fur pattern.",
+    identity, coat, comp, quality
+  ].join(" ");
 
-    lowkey: [
-      'Dramatic low-key studio on graphite/black with directional Rembrandt/edge lighting. Face and chest clearly readable; no silhouettes.',
-      identity, comp, quality
-    ].join(' '),
+  const pastell = [
+    "Elegant pastel look: matte, creamy background gradients (sage/sand/blush), soft diffuse light.",
+    "Slight painterly texture only in the background; face/eyes remain naturally sharp.",
+    identity, coat, comp, quality
+  ].join(" ");
 
-    highkey: [
-      'Bright high-key portrait on near-white background, very soft shadowing, airy modern feel, light glow.',
-      identity, comp, quality
-    ].join(' '),
+  const vintage = [
+    "Timeless vintage tone: subtle ivory/soft sepia, fine analog grain, restrained halation.",
+    "Paper/fiber character only in the background; midtone fur colors remain believable.",
+    identity, coat, comp, quality
+  ].join(" ");
 
-    pastell: [
-      'Elegant pastel look: matte, creamy background gradients (sage/sand/blush) with diffuse soft light. Slight painterly background texture allowed.',
-      identity, comp, quality
-    ].join(' '),
+  const steampunk = [
+    "Warm steampunk tonality: brass/copper palette in the background (soft industrial bokeh).",
+    "Warm tungsten key + cooler rim; stylized yet no hard midtone recolor on the coat.",
+    identity, coat, comp, quality
+  ].join(" ");
 
-    vintage: [
-      'Timeless ivory/soft sepia toning with fine analog grain and gentle halation. Background may hint subtle paper/fiber texture.',
-      identity, comp, quality
-    ].join(' '),
+  const natural = [
+    "Refined neutral studio look: balanced colors, soft backdrop gradient, subtle clarity.",
+    "Light vignette/glow for depth; overall realistic and calm.",
+    identity, coat, comp, quality
+  ].join(" ");
 
-    steampunk: [
-      'Warm brass/copper palette in the background (defocused industrial bokeh). Warm tungsten key + cooler rim; avoid recoloring fur midtones.',
-      identity, comp, quality
-    ].join(' '),
-
-    natural: [
-      'Refined neutral studio look: balanced color, soft gradient background, subtle clarity; realistic and calm.',
-      identity, comp, quality
-    ].join(' ')
-  };
+  return { neon, cinematic, lowkey, highkey, pastell, vintage, steampunk, natural };
 }
 
-/* ---------- Render-Parameter (je Stil) ---------- */
-const STYLE_PARAMS = {
-  // Zwei-Pass NEON
-  neon: {
-    // Pass A: Zoom-out/Outpaint (etwas höhere Strength, neutral)
-    pre:   { strength: 0.52, cfg: 3.0, width: 1024, height: 1365 },
-    // Pass B: Stil – geringer, damit Landmarken bleiben
-    style: { strength: 0.38, cfg: 3.2, width: 1024, height: 1365 }
-  },
-
-  // Default für 1-Pass Stile (falls du sie so renderst)
-  default: { strength: 0.42, cfg: 3.0, width: 1024, height: 1365 }
-};
-
-/* ============================================================
- * Pipeline-Runner
- * - `render` ist dein bestehender interner Render-Call:
- *      async render({ image, prompt, negative, strength, cfg, seed, width, height })
- *   und gibt { image } oder { url } zurück.
- * ============================================================ */
-async function runPipeline (imageBufferOrUrl, style, seed, render) {
+/** Ein-Pass-Renderer — nutzt moderate Stärke/CFG für Likeness */
+async function runPipeline(image, style, seed, render) {
   const PROMPTS = buildPrompts();
 
-  if (style === 'neon') {
-    const p = STYLE_PARAMS.neon;
+  // Universelles Portrait-Format mit viel Negativraum
+  // (lässt spätere Crops auf Hoch/Quer zu)
+  const BASE_W = 1024;
+  const BASE_H = 1365; // 3:4 / 0.75 — bewährt für beide Crops
 
-    // Pass A – neutraler Zoom-out (Outpaint über Prompt)
-    const passA = await render({
-      image:   imageBufferOrUrl,
-      prompt:  PROMPTS.neon.pre,
-      negative: NEGATIVE_PROMPT,
-      strength: p.pre.strength,
-      cfg:      p.pre.cfg,
-      seed,
-      width:    p.pre.width,
-      height:   p.pre.height
-    });
+  // Moderate Defaults (Likeness > Stil)
+  let strength = 0.40; // 0.36–0.44 → je niedriger, desto mehr Originalgeometrie
+  let cfg      = 3.10; // 2.8–3.2 hält Farben/Licht in Schach
 
-    const imgA = passA.image || passA.url || passA; // defensive
-
-    // Pass B – Neon-Stil auf das Ergebnis von A
-    const passB = await render({
-      image:   imgA,
-      prompt:  PROMPTS.neon.style,
-      negative: NEGATIVE_PROMPT,
-      strength: p.style.strength,
-      cfg:      p.style.cfg,
-      seed,
-      width:    p.style.width,
-      height:   p.style.height
-    });
-
-    return passB.image || passB.url || passB;
+  // Stilspezifische Feinanpassungen
+  switch (style) {
+    case "neon":
+      strength = 0.40;
+      cfg      = 3.00;
+      break;
+    case "cinematic":
+      strength = 0.38;
+      cfg      = 3.00;
+      break;
+    case "lowkey":
+      strength = 0.38;
+      cfg      = 3.00;
+      break;
+    case "highkey":
+      strength = 0.36;
+      cfg      = 3.10;
+      break;
+    case "pastell":
+      strength = 0.38;
+      cfg      = 3.10;
+      break;
+    case "vintage":
+      strength = 0.38;
+      cfg      = 3.00;
+      break;
+    case "steampunk":
+      strength = 0.40;
+      cfg      = 3.00;
+      break;
+    case "natural":
+    default:
+      strength = 0.36;
+      cfg      = 3.00;
+      break;
   }
 
-  // 1-Pass Fallback für übrige Stile
-  const pp = STYLE_PARAMS.default;
-  const prompt =
-    typeof PROMPTS[style] === 'string'
-      ? PROMPTS[style]
-      : (PROMPTS.natural || ''); // safety
+  const prompt = PROMPTS[style] || PROMPTS.natural;
 
+  // EINER Render-Aufruf (kein Prepass)
   const out = await render({
-    image:   imageBufferOrUrl,
+    image,
     prompt,
     negative: NEGATIVE_PROMPT,
-    strength: pp.strength,
-    cfg:      pp.cfg,
+    strength,
+    cfg,
     seed,
-    width:    pp.width,
-    height:   pp.height
+    width: BASE_W,
+    height: BASE_H
   });
 
-  return out.image || out.url || out;
+  return out.image;
 }
-
-/* ============================================================
- * >>> So bindest du es ein:
- *  - In deiner bestehenden Handler-Funktion:
- *
- *    const finalImg = await runPipeline(uploadedImage, style, seed, render);
- *
- *  - `render` bleibt deine vorhandene Funktion, die den
- *    eigentlichen Model-Call macht (Stable Diffusion / SDXL / etc.).
- *  - Rückgabe (`finalImg`) ist wie bisher: reiche sie in deinen
- *    Storage/Response-Pfad weiter.
- * ============================================================ */
 
 
 
