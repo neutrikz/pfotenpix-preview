@@ -1,11 +1,11 @@
 // /api/generate-fix.js – Outpainting + Single-Style + Diagnose-Header (Patch A)
-// Version: PFPX-2025-08c
+// Version: PFPX-2025-08d
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 export const config = { api: { bodyParser: false } };
-const VERSION = "PFPX-2025-08c";
+const VERSION = "PFPX-2025-08d";
 
 // ===== CORS =====
 function applyCORS(req, res) {
@@ -18,7 +18,7 @@ function applyCORS(req, res) {
   );
 }
 
-// ===== Diagnose-Header Setter (NEU) =====
+// ===== Diagnose-Header Setter =====
 function setDiagHeaders(res, { styleHeader, styleQuery, normalized, finalStyle, version }) {
   try {
     res.setHeader("x-pfpx-version", String(version || VERSION));
@@ -157,68 +157,52 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
 }
 
 /**
- * PFPX – Prompt-Baustein (Half-Portrait + querformat-tauglich + Neon-Glow)
- * - Motiv bewusst kleiner (Landscape-Crop sicher)
- * - Immer Brust-bis-Kopf (Half-Portrait), kein Unterkörper
- * - Stärkere Identitäts-Locks (Augenabstand, Fellmuster etc.)
- * - Neon: weicher Glow-Hintergrund (ohne harte Strahlen)
- *
- * Nutzungsweise im Generator:
- *   const { prompt, negative } = buildPrompts().neon;
- *   // oder .cinematic, .lowkey, etc.
+ * Prompt-Bausteine (Half-Portrait + Landscape-safe + Neon-Glow)
  */
 function buildPrompts() {
-  /* ========= Komposition & Identität ========= */
-
-  // Querformat-tauglich: bewusst kleiner, viel Negativraum
+  // Querformat-tauglich + Größen-Limits
   const compCommon =
     "Komposition: streng mittig, komplette Kopfform sichtbar, nicht heranzoomen. " +
-    "Motiv ≤ 42–45% der Bildbreite und ≤ 45–48% der Bildhöhe; rundum 30–40% Negativraum. " +
-    "Genug Headroom & Sideroom für spätere Crops (Portrait ODER Landscape). " +
-    "Keine engen Beschnitte, keine Rahmen, keine schrägen Perspektiven.";
+    "Motiv ≤ 38–42% der Bildbreite und ≤ 42–45% der Bildhöhe; rundum 30–40% Negativraum. " +
+    "Muss auch als 16:9-Landscape-Crop funktionieren (seitlich ausreichend Luft). " +
+    "Keine engen Beschnitte, keine Rahmen, keine schräge Perspektive.";
 
-  // Erzwingt Half-Portrait unabhängig vom Original (Sitzen/Liegen egal)
+  // Half-Portrait klar erzwingen
   const compBust =
-    "Framing: Half-Portrait (Brust bis Kopf). Bildende ungefähr auf Höhe der oberen Brust; " +
-    "keine Pfoten/Beine/Unterkörper im Bild, kein Ganzkörper, kein liegendes Vollformat. " +
+    "Framing: Half-Portrait (Brust bis Kopf). Oberer Brustbereich sichtbar; " +
+    "kein Head-only, keine Pfoten/Beine/Unterkörper, kein Ganzkörper, kein liegendes Vollformat. " +
     "Kopf und Brust vorn klar, Hintergrund weich.";
 
-  // Stärkere Wiedererkennbarkeit (Augenabstand, Fellmuster etc.)
+  // Wiedererkennbarkeit / Identität
   const identity =
     "Wiedererkennbarkeit: dasselbe reale Tier wie auf der Vorlage. " +
-    "Gesichtsproportionen exakt beibehalten: Augenabstand, Augenform, Ohren-Set/Neigung, " +
-    "Schädelbreite, Nasenlänge/-form. Fellfarbe/-zeichnung an Mitteltönen orientiert " +
-    "(keine harte globale Umfärbung); charakteristische Abzeichen, Maske, Stirnfalten und " +
-    "weiße/helle Bereiche originalgetreu; nichts dazuerfinden, nichts wegretuschieren. " +
-    "Keine Accessoires, keine Typografie/Logos, keine zusätzlichen Objekte.";
+    "Gesichtsproportionen exakt: Augenabstand/-form, Ohren-Set/Neigung, Schädelbreite, Nasenform/-länge. " +
+    "Fellfarbe/-zeichnung nach Mitteltönen; charakteristische Abzeichen/Maske/Stirnfalten/helle Bereiche originalgetreu. " +
+    "Nichts erfinden, nichts weglassen; keine Accessoires, keine Typografie, keine zusätzlichen Objekte.";
 
   const quality =
     "Studioqualität, sRGB, fein detaillierte Fellstruktur und Schnurrhaare, saubere Kanten, " +
-    "sanfte lokale Tonwertsteuerung, kein Überschärfen, kein Wachslook.";
+    "sanfte lokale Tonwertsteuerung, kein Wachslook, kein Oversoften.";
 
-  /* ========= Negativ-Liste (global) ========= */
-
+  // Negativliste – zusätzliche Anti-Closeup/Anti-Tight-Crop Sicherungen
   const negCommon =
-    "full body, whole body, legs, paws, lower body, lying, extreme close up, tight crop, " +
-    "fisheye, wide distortion, caricature, chibi, anime, 3d render, painting, oversaturated, " +
-    "posterized, watercolor, oil paint, lowres, jpeg artifacts, blurry, noise, banding, " +
-    "wrong breed, wrong coat color, wrong markings, mismatched eye spacing, " +
+    "full body, whole body, legs, paws, lower body, lying, " +
+    "tight framing, tight crop, close crop, extreme close-up, macro portrait, face-only, head-only, " +
+    "fill frame, full-bleed, zoomed in, enlarged face, fisheye, wide distortion, caricature, chibi, anime, " +
+    "3d render, painting, oversaturated, posterized, watercolor, oil paint, lowres, jpeg artifacts, " +
+    "blurry, noise, banding, wrong breed, wrong coat color, wrong markings, mismatched eye spacing, " +
     "asymmetric face, deformed anatomy, duplicate nose, extra ears";
 
-  /* ========= Stil-spezifisch ========= */
-
-  // — NEON: weicher Glow-Hintergrund + additive Rim-Lights, Mitteltöne bleiben lesbar
+  // NEON – stärkerer, aber diffuser Glow
   const neonBg =
-    "Hintergrund: weicher Neon-Glow-Verlauf von tiefem Indigo zu Violett-Magenta, " +
-    "subtiler volumetrischer Dunst/Schimmer, fein verteilte Dust/Bokeh-Partikel, " +
-    "keine harten Strahlen, keine Laser/Godrays, keine Props.";
+    "Hintergrund: ausgeprägter, aber diffuser Neon-Glow-Verlauf von tiefem Indigo (links) zu Violett–Magenta (rechts). " +
+    "Feiner Dunst/atmosphärischer Schimmer, weiche Bloom-Höfe, dezente, großflächige Bokeh/Dust-Partikel. " +
+    "Keine harten Lichtstrahlen, keine Laser/Godrays, keine Spotlights, keine Props.";
 
   const neonLight =
     "Licht: additive Rim-Lights – links kräftiges Cyan/Teal, rechts sattes Magenta/Pink; " +
     "optional minimaler warmer Orange-Kicker in den Highlights. " +
-    "Neon wirkt vor allem an Kanten/Schattensäumen und in Lichtern; " +
-    "Mitteltöne/Fell-Albedo bleiben erkennbar (weiße/creme Bereiche bleiben neutral). " +
-    "Sanfter Bloom/Halation erlaubt.";
+    "Neonwirkung v. a. an Fellkanten/Schattensäumen; Mitteltöne/Fell-Albedo erkennbar (weiße/creme Bereiche bleiben neutral).";
 
   const neonPrompt = [
     "Galerie-taugliches Neon-Portrait desselben Tieres, fotorealistisch, Brust bis Kopf.",
@@ -230,11 +214,12 @@ function buildPrompts() {
     quality,
   ].join(" ");
 
-  const neonNeg = negCommon + ", hard godrays, laser beams, spotlight rays, high contrast poster look";
+  const neonNeg =
+    negCommon + ", hard godrays, laser beams, spotlight rays, high-contrast poster look";
 
-  // — Weitere Stile (ebenfalls Half-Portrait + querformat-tauglich)
+  // Weitere Stile: ebenfalls landscape-safe + Half-Portrait
   const cinematic = [
-    "Deutlich filmischer Look mit sanfter Teal/Orange-Gradierung, feinem Filmkorn, " +
+    "Filmischer Look mit sanfter Teal/Orange-Gradierung, feinem Filmkorn, " +
       "zarten anamorphischen Bokeh-Lichtern im Hintergrund, leichter Bloom.",
     "Schwärzen tief mit Zeichnung; Fellmuster natürlich; Mitteltöne nicht hart umfärben.",
     identity,
@@ -309,7 +294,6 @@ function buildPrompts() {
   };
 }
 
-// falls du buildPrompts ggf. testweise extern importieren willst:
 export { buildPrompts };
 
 // ===== Stil-Normalisierung =====
@@ -317,7 +301,6 @@ const ALLOWED = ["neon", "steampunk", "cinematic", "pastell", "vintage", "highke
 function normalizeStyle(s) {
   if (!s || typeof s !== "string") return null;
   let v = s.trim().toLowerCase();
-  // Synonyme / Schreibvarianten
   if (v === "high-key" || v === "high key") v = "highkey";
   if (v === "low-key" || v === "low key") v = "lowkey";
   return v;
@@ -328,9 +311,9 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).end();
 
-  const DIAG = {}; // sammelt Diagnose-Daten
+  const DIAG = {};
 
-  // --- Diagnose: eingehende Header/Query (NEU) ---
+  // Diagnose: Stilstraßen
   const styleHeaderRaw = Array.isArray(req.headers["x-pfpx-style"])
     ? req.headers["x-pfpx-style"][0]
     : req.headers["x-pfpx-style"] || req.headers["x-style"] || "";
@@ -349,13 +332,12 @@ export default async function handler(req, res) {
     let sourceBuffer = null;
     let composeMargin = null;
 
-    // Roh-Stil-Eingaben (für Diagnose)
-    let rawStylesField = null; // exakt erhaltene Zeichenkette (z. B. '["vintage"]' oder 'vintage')
-    let requestedStyles = null; // Array (evtl. vor Normalisierung)
+    let rawStylesField = null;
+    let requestedStyles = null;
 
-    // Zielgröße
     const SIZE = 1024;
-    const COMPOSE_MARGIN_DEFAULT = 0.40;
+    // ► kleineres Start-Motiv (Landscape-safe): 0.38 ≈ 30% Motivfläche
+    const COMPOSE_MARGIN_DEFAULT = 0.38;
 
     if (ctype.startsWith("multipart/form-data")) {
       const m = /boundary=([^;]+)/i.exec(ctype);
@@ -402,10 +384,8 @@ export default async function handler(req, res) {
       return res.status(415).json({ error: "Unsupported Content-Type" });
     }
 
-    // Diagnose: Rohdaten
     DIAG.request_styles_sent_raw = rawStylesField ?? null;
 
-    // Fallback: Header/Query nur wenn im Body nichts war
     if ((!requestedStyles || !requestedStyles.length) && styleHeaderRaw) {
       requestedStyles = [String(styleHeaderRaw)];
       rawStylesField = String(styleHeaderRaw);
@@ -415,22 +395,17 @@ export default async function handler(req, res) {
       rawStylesField = String(styleQueryRaw);
     }
 
-    // Normalisieren + validieren
     let normalized = Array.isArray(requestedStyles)
       ? requestedStyles.map(normalizeStyle).filter(Boolean)
       : [];
-    // Duplikate raus
     normalized = Array.from(new Set(normalized));
-    // Nur erlaubte
     let filtered = normalized.filter((s) => ALLOWED.includes(s));
 
-    // Diagnose
     DIAG.request_styles_array = normalized;
     DIAG.style_header = styleHeaderRaw || "";
     DIAG.style_query = styleQueryRaw || "";
 
     if (filtered.length === 0) {
-      // Kein gültiger Stil → Neon als Fallback
       filtered = ["neon"];
       DIAG.fallback_used = true;
     }
@@ -453,7 +428,6 @@ export default async function handler(req, res) {
     for (const style of filtered) {
       await sleep(150 + Math.round(Math.random() * 300));
 
-      // Stil-Baustein holen
       const pObj = prompts[style] || prompts["natural"];
       const positive = pObj?.prompt || "";
       const negative = pObj?.negative || "";
@@ -475,7 +449,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // Diagnose: welche Keys kamen zurück
     DIAG.upstream_previews_keys = Object.keys(previews);
     DIAG.upstream_failed = failed;
     DIAG.version = VERSION;
