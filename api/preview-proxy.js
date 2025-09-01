@@ -22,57 +22,44 @@ function esc(s) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
-
 function clamp(n, min, max) {
   n = Number(n);
   if (Number.isNaN(n)) n = min;
   return Math.min(Math.max(n, min), max);
 }
-
 function tryRead(p) {
   try { return fs.readFileSync(p); } catch { return null; }
 }
 
 /* ------------------ data: → Buffer (mit Limit) ------------------ */
-const MAX_BYTES_DATA = 18 * 1024 * 1024; // 18 MB Obergrenze für data: payload
-
+const MAX_BYTES_DATA = 18 * 1024 * 1024; // 18 MB
 function bufferFromDataURL(u) {
   const m = /^data:(.+?);base64,(.+)$/i.exec(u || "");
   if (!m) return null;
   const b64 = m[2];
-  // Grobe Plausibilitätsprüfung: Base64 ~ 4/3 der Bytes
   const approx = Math.floor(b64.length * 3 / 4);
-  if (approx > MAX_BYTES_DATA) {
-    throw new Error(`dataurl_too_large ~${approx}B > ${MAX_BYTES_DATA}B`);
-  }
+  if (approx > MAX_BYTES_DATA) throw new Error(`dataurl_too_large ~${approx}B > ${MAX_BYTES_DATA}B`);
   return Buffer.from(b64, "base64");
 }
 
 /* ------------------ Upstream holen (mit Limits) ------------------ */
-const MAX_BYTES_HTTP = 25 * 1024 * 1024; // 25 MB Obergrenze für HTTP
+const MAX_BYTES_HTTP = 25 * 1024 * 1024; // 25 MB
 const FETCH_TIMEOUT_MS = 15000;          // 15s
 
 async function fetchUpstream(u) {
-  // data: direkt
   if (/^data:/i.test(u)) {
     const buf = bufferFromDataURL(u);
     if (!buf) throw new Error("bad data: url");
     return buf;
   }
+  if (!/^https?:\/\//i.test(u)) throw new Error("unsupported_protocol");
 
-  // Nur http/https zulassen
-  if (!/^https?:\/\//i.test(u)) {
-    throw new Error("unsupported_protocol");
-  }
-
-  // Einige Upstreams mögen encoded URLs → 2x decode tolerant
   let urlString = u;
   try { urlString = decodeURIComponent(u); } catch {}
   try { urlString = decodeURIComponent(urlString); } catch {}
 
   let url;
-  try { url = new URL(urlString); }
-  catch { throw new Error("bad_url"); }
+  try { url = new URL(urlString); } catch { throw new Error("bad_url"); }
 
   const ua = "pfpx-preview-proxy/1.6 (+https://pfotenpix.de)";
   const baseHeaders = {
@@ -85,18 +72,14 @@ async function fetchUpstream(u) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-  // 1. Versuch mit normalem Referer
   let r = await fetch(url.toString(), {
-    headers: baseHeaders, redirect: "follow", cache: "no-store",
-    signal: controller.signal
+    headers: baseHeaders, redirect: "follow", cache: "no-store", signal: controller.signal
   }).catch((e) => { throw new Error(`fetch_fail_1 ${String(e)}`); });
 
-  // 2. Fallback mit pfotenpix-Referer
   if (!r.ok) {
     const fallbackHeaders = { ...baseHeaders, referer: "https://pfotenpix.de/" };
     r = await fetch(url.toString(), {
-      headers: fallbackHeaders, redirect: "follow", cache: "no-store",
-      signal: controller.signal
+      headers: fallbackHeaders, redirect: "follow", cache: "no-store", signal: controller.signal
     }).catch((e) => { throw new Error(`fetch_fail_2 ${String(e)}`); });
   }
 
@@ -107,17 +90,11 @@ async function fetchUpstream(u) {
     throw new Error(`upstream ${r.status} ${r.statusText} :: ${txt.slice(0, 400)}`);
   }
 
-  // Content-Length vorab prüfen (falls vorhanden)
   const cl = parseInt(r.headers.get("content-length") || "0", 10);
-  if (cl && cl > MAX_BYTES_HTTP) {
-    throw new Error(`upstream_too_large ${cl}B > ${MAX_BYTES_HTTP}B`);
-  }
+  if (cl && cl > MAX_BYTES_HTTP) throw new Error(`upstream_too_large ${cl}B > ${MAX_BYTES_HTTP}B`);
 
-  // Ganze Antwort lesen (Vercel/Node fetch → arrayBuffer möglich)
   const buf = Buffer.from(await r.arrayBuffer());
-  if (buf.length > MAX_BYTES_HTTP) {
-    throw new Error(`upstream_too_large_effective ${buf.length}B > ${MAX_BYTES_HTTP}B`);
-  }
+  if (buf.length > MAX_BYTES_HTTP) throw new Error(`upstream_too_large_effective ${buf.length}B > ${MAX_BYTES_HTTP}B`);
   return buf;
 }
 
@@ -136,7 +113,6 @@ function loadFontFromPublic() {
     "public/DejaVuSans.woff",
     "public/DejaVuSans.ttf",
   ];
-
   for (const rel of candidates) {
     const abs = path.join(process.cwd(), rel);
     const buf = tryRead(abs);
@@ -156,9 +132,8 @@ function loadFontFromPublic() {
   return null;
 }
 
-/* ================================================================ */
-
-export default async function handler(req, res) {
+/* ========================= Handler ========================= */
+async function previewProxyHandler(req, res) {
   applyCORS(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET")     return res.status(405).end();
@@ -167,7 +142,6 @@ export default async function handler(req, res) {
     const u = req.query.u ? String(req.query.u) : "";
     if (!u) return res.status(400).json({ error: "missing ?u=" });
 
-    // Parameter (robust geklammert)
     const width    = clamp(parseInt(req.query.w  ?? "1200", 10),  120, 3000);
     const wmTxt    = esc(req.query.wm ?? "PFOTENPIX - PREVIEW");
     const opacity  = clamp(parseFloat(req.query.op ?? "0.36"), 0.05, 0.8);
@@ -178,38 +152,30 @@ export default async function handler(req, res) {
     const fmt      = String((req.query.fmt ?? "jpeg")).toLowerCase(); // jpeg/webp/png
     const q        = clamp(parseInt(req.query.q ?? (fmt === "webp" ? 90 : 92), 10), 60, 100);
 
-    // Sharp Sicherheitsventile
     sharp.cache(true);
-    sharp.concurrency(0);                 // default
-    const LIMIT_PIXELS = 80e6;            // 80 Mio. Pixel (z.B. 10k x 8k)
-    sharp.limitInputPixels(LIMIT_PIXELS);
+    sharp.concurrency(0);
+    sharp.limitInputPixels(80e6);
 
-    // 1) Quellbild holen
     const srcBuf = await fetchUpstream(u);
 
-    // 2) Vorverarbeitung: EXIF-orient, sRGB
     let pipeline = sharp(srcBuf, { failOn: "none", unlimited: false })
-      .rotate()                            // EXIF-orient
-      .toColorspace("srgb");               // in sRGB konvertieren
+      .rotate()
+      .toColorspace("srgb");
 
-    // 3) auf Zielbreite, niemals vergrößern
     const resizedBuf = await pipeline
       .resize({ width, fit: "inside", withoutEnlargement: true })
       .toBuffer();
 
-    // 4) Endmaße bestimmen
     const meta = await sharp(resizedBuf).metadata();
     const w = meta.width  || width;
     const h = meta.height || Math.round((w * 3) / 4);
 
-    // 5) Font laden & einbetten
-    const font = loadFontFromPublic(); // { b64, mime, fmt } | null
+    const font = loadFontFromPublic();
     const fontFace = font
       ? `@font-face{font-family:'pfpxwm';src:url(data:${font.mime};base64,${font.b64}) format('${font.fmt}');font-weight:600;font-style:normal;font-display:block;}`
       : "";
     const family = font ? "pfpxwm" : "DejaVu Sans, Liberation Sans, Arial, Helvetica, sans-serif";
 
-    // 6) SVG-Overlay erzeugen
     const svg = (W,H)=>`
       <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">
         <defs>
@@ -227,13 +193,10 @@ export default async function handler(req, res) {
         </defs>
         <rect width="100%" height="100%" fill="url(#wm)"/>
       </svg>`;
-
     const overlay = Buffer.from(svg(w, h));
 
-    // 7) Compositing (WM drüber)
     let outSharp = sharp(resizedBuf).composite([{ input: overlay, top: 0, left: 0 }]);
 
-    // 8) Ausgabeformat + Header
     if (fmt === "webp") {
       outSharp = outSharp.webp({ quality: q });
       res.setHeader("Content-Type", "image/webp");
@@ -246,8 +209,6 @@ export default async function handler(req, res) {
     }
 
     const out = await outSharp.toBuffer();
-
-    // 9) Caching-Header
     res.setHeader("Cache-Control", "public, max-age=600, stale-while-revalidate=60");
     res.setHeader("X-PFPX-Proxy", "ok");
     return res.status(200).send(out);
@@ -261,3 +222,5 @@ export default async function handler(req, res) {
     }));
   }
 }
+
+export default previewProxyHandler;
