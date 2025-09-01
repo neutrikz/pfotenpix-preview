@@ -12,7 +12,10 @@ function applyCORS(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "*");
-  res.setHeader("Access-Control-Expose-Headers", "x-request-id,retry-after,x-pfpx-version,x-pfpx-style-header,x-pfpx-style-query,x-pfpx-style-final,x-pfpx-styles-array");
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "x-request-id,retry-after,x-pfpx-version,x-pfpx-style-header,x-pfpx-style-query,x-pfpx-style-final,x-pfpx-styles-array"
+  );
 }
 
 // ===== Diagnose-Header Setter (NEU) =====
@@ -38,8 +41,11 @@ function parseMultipart(buffer, boundary) {
   const delim = `--${boundary}`;
   const closeDelim = `--${boundary}--`;
   const body = buffer.toString("binary");
-  const parts = body.split(delim).filter(p => p && p !== "--" && p !== closeDelim);
-  const fields = {}, files = {};
+  const parts = body
+    .split(delim)
+    .filter((p) => p && p !== "--" && p !== closeDelim);
+  const fields = {},
+    files = {};
   for (let rawPart of parts) {
     if (rawPart.startsWith(CRLF)) rawPart = rawPart.slice(CRLF.length);
     const sep = CRLF + CRLF;
@@ -59,7 +65,11 @@ function parseMultipart(buffer, boundary) {
     const ctype = headers["content-type"] || "";
     if (!name) continue;
     if (filename) {
-      files[name] = { filename, contentType: ctype || "application/octet-stream", buffer: Buffer.from(rawContent, "binary") };
+      files[name] = {
+        filename,
+        contentType: ctype || "application/octet-stream",
+        buffer: Buffer.from(rawContent, "binary"),
+      };
     } else {
       fields[name] = Buffer.from(rawContent, "binary").toString("utf8");
     }
@@ -67,8 +77,8 @@ function parseMultipart(buffer, boundary) {
   return { fields, files };
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-const withJitter = ms => Math.round(ms * (0.85 + Math.random() * 0.3));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const withJitter = (ms) => Math.round(ms * (0.85 + Math.random() * 0.3));
 
 function extractUrlOrDataUri(json) {
   const item = json?.data?.[0];
@@ -88,7 +98,12 @@ async function fetchOpenAIWithRetry(form, styleName, { retries = 4, baseDelayMs 
         body: form,
       });
       const txt = await resp.text();
-      let json; try { json = JSON.parse(txt); } catch { json = null; }
+      let json;
+      try {
+        json = JSON.parse(txt);
+      } catch {
+        json = null;
+      }
       if (resp.ok) {
         const out = extractUrlOrDataUri(json);
         if (out) return out;
@@ -119,7 +134,10 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
   const pad = Math.round(targetSize * m);
 
   const subjectPng = await sharp(inputBuffer)
-    .resize(subjectSize, subjectSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .resize(subjectSize, subjectSize, {
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
     .png()
     .toBuffer();
 
@@ -128,8 +146,8 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
       width: targetSize,
       height: targetSize,
       channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 0 }
-    }
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
   })
     .composite([{ input: subjectPng, left: pad, top: pad }])
     .png()
@@ -137,10 +155,6 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
 
   return canvas;
 }
-
-
-
-
 
 /**
  * PFPX – Prompt-Baustein (Half-Portrait + querformat-tauglich + Neon-Glow)
@@ -153,8 +167,7 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
  *   const { prompt, negative } = buildPrompts().neon;
  *   // oder .cinematic, .lowkey, etc.
  */
-
-function buildPrompts () {
+function buildPrompts() {
   /* ========= Komposition & Identität ========= */
 
   // Querformat-tauglich: bewusst kleiner, viel Negativraum
@@ -214,97 +227,115 @@ function buildPrompts () {
     identity,
     compCommon,
     compBust,
-    quality
+    quality,
   ].join(" ");
 
-  const neonNeg =
-    negCommon +
-    ", hard godrays, laser beams, spotlight rays, high contrast poster look";
+  const neonNeg = negCommon + ", hard godrays, laser beams, spotlight rays, high contrast poster look";
 
-  // — Weitere Stile (unverändert, aber ebenfalls Half-Portrait + querformat-tauglich)
+  // — Weitere Stile (ebenfalls Half-Portrait + querformat-tauglich)
   const cinematic = [
     "Deutlich filmischer Look mit sanfter Teal/Orange-Gradierung, feinem Filmkorn, " +
       "zarten anamorphischen Bokeh-Lichtern im Hintergrund, leichter Bloom.",
     "Schwärzen tief mit Zeichnung; Fellmuster natürlich; Mitteltöne nicht hart umfärben.",
-    identity, compCommon, compBust, quality
+    identity,
+    compCommon,
+    compBust,
+    quality,
   ].join(" ");
 
   const lowkey = [
     "Dramatisches Low-Key-Studio auf tiefem Graphit/Schwarz mit gerichteter Edge/Rembrandt-Lichtführung.",
     "Motiv klar heller als Hintergrund; Gesicht/Brust deutlich lesbar; dezenter Bloom; nichts säuft ab.",
-    identity, compCommon, compBust, quality
+    identity,
+    compCommon,
+    compBust,
+    quality,
   ].join(" ");
 
   const highkey = [
     "Strahlendes High-Key-Portrait: fast weißer Hintergrund, große weiche Lichtquellen, sehr sanfte Schatten, leichter Glow.",
     "Airy und modern; Konturen sauber, Augen lebendig, Fellzeichnung klar.",
-    identity, compCommon, compBust, quality
+    identity,
+    compCommon,
+    compBust,
+    quality,
   ].join(" ");
 
   const pastell = [
     "Eleganter Pastell-Look: matte, cremige Hintergrundverläufe (Sage/Sand/Blush) mit diffusem weichem Licht.",
     "Leichte painterly-Textur im Hintergrund erlaubt; Gesicht/Augen natürlich scharf.",
-    identity, compCommon, compBust, quality
+    identity,
+    compCommon,
+    compBust,
+    quality,
   ].join(" ");
 
   const vintage = [
     "Zeitloser Vintage-Look: zarter Elfenbein-/leichter Sepia-Ton, feines analoges Grain, behutsame Halation.",
     "Hintergrund darf Papier-/Fasercharakter andeuten; Fellfarben in Mitteltönen glaubwürdig.",
-    identity, compCommon, compBust, quality
+    identity,
+    compCommon,
+    compBust,
+    quality,
   ].join(" ");
 
   const steampunk = [
     "Warmer Steampunk-Tonwert mit Messing/Kupfer-Palette im unscharfen Hintergrund-Bokeh (nur als Stimmung).",
     "Warmes Wolfram-Keylight + kühleres Rim; Mitteltöne am Fell nicht hart umfärben.",
-    identity, compCommon, compBust, quality
+    identity,
+    compCommon,
+    compBust,
+    quality,
   ].join(" ");
 
   const natural = [
     "Edler Neutral-Studio-Look: ausgewogene Farben, sanfter Verlaufshintergrund, subtile Klarheit.",
     "Leichte Vignette/Glow für Tiefe, insgesamt ruhig und realistisch.",
-    identity, compCommon, compBust, quality
+    identity,
+    compCommon,
+    compBust,
+    quality,
   ].join(" ");
 
   return {
-    neon:     { prompt: neonPrompt,     negative: neonNeg },
-    cinematic:{ prompt: cinematic,      negative: negCommon },
-    lowkey:   { prompt: lowkey,         negative: negCommon },
-    highkey:  { prompt: highkey,        negative: negCommon },
-    pastell:  { prompt: pastell,        negative: negCommon },
-    vintage:  { prompt: vintage,        negative: negCommon },
-    steampunk:{ prompt: steampunk,      negative: negCommon },
-    natural:  { prompt: natural,        negative: negCommon }
+    neon: { prompt: neonPrompt, negative: neonNeg },
+    cinematic: { prompt: cinematic, negative: negCommon },
+    lowkey: { prompt: lowkey, negative: negCommon },
+    highkey: { prompt: highkey, negative: negCommon },
+    pastell: { prompt: pastell, negative: negCommon },
+    vintage: { prompt: vintage, negative: negCommon },
+    steampunk: { prompt: steampunk, negative: negCommon },
+    natural: { prompt: natural, negative: negCommon },
   };
 }
 
-export default buildPrompts;
-
-
+// falls du buildPrompts ggf. testweise extern importieren willst:
+export { buildPrompts };
 
 // ===== Stil-Normalisierung =====
-const ALLOWED = ["neon","steampunk","cinematic","pastell","vintage","highkey","lowkey","natural"];
+const ALLOWED = ["neon", "steampunk", "cinematic", "pastell", "vintage", "highkey", "lowkey", "natural"];
 function normalizeStyle(s) {
   if (!s || typeof s !== "string") return null;
   let v = s.trim().toLowerCase();
   // Synonyme / Schreibvarianten
   if (v === "high-key" || v === "high key") v = "highkey";
-  if (v === "low-key"  || v === "low key")  v = "lowkey";
+  if (v === "low-key" || v === "low key") v = "lowkey";
   return v;
 }
 
 export default async function handler(req, res) {
   applyCORS(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST")   return res.status(405).end();
+  if (req.method !== "POST") return res.status(405).end();
 
   const DIAG = {}; // sammelt Diagnose-Daten
+
   // --- Diagnose: eingehende Header/Query (NEU) ---
   const styleHeaderRaw = Array.isArray(req.headers["x-pfpx-style"])
     ? req.headers["x-pfpx-style"][0]
-    : (req.headers["x-pfpx-style"] || req.headers["x-style"] || "");
+    : req.headers["x-pfpx-style"] || req.headers["x-style"] || "";
   let styleQueryRaw = "";
   try {
-    // Next.js gibt req.query; Fallback: URL parsen
     if (req.query && typeof req.query.style !== "undefined") {
       styleQueryRaw = Array.isArray(req.query.style) ? req.query.style[0] : String(req.query.style || "");
     } else if (req.url) {
@@ -319,8 +350,8 @@ export default async function handler(req, res) {
     let composeMargin = null;
 
     // Roh-Stil-Eingaben (für Diagnose)
-    let rawStylesField = null;      // exakt erhaltene Zeichenkette (z. B. '["vintage"]' oder 'vintage')
-    let requestedStyles = null;     // Array (evtl. vor Normalisierung)
+    let rawStylesField = null; // exakt erhaltene Zeichenkette (z. B. '["vintage"]' oder 'vintage')
+    let requestedStyles = null; // Array (evtl. vor Normalisierung)
 
     // Zielgröße
     const SIZE = 1024;
@@ -330,15 +361,19 @@ export default async function handler(req, res) {
       const m = /boundary=([^;]+)/i.exec(ctype);
       if (!m) return res.status(400).json({ error: "Bad multipart (no boundary)" });
       const { fields, files } = parseMultipart(await readRawBody(req), m[1]);
-      const f = files["file"]; if (!f?.buffer) return res.status(400).json({ error: "No file uploaded" });
+      const f = files["file"];
+      if (!f?.buffer) return res.status(400).json({ error: "No file uploaded" });
       sourceBuffer = f.buffer;
 
       if (fields["styles"] != null) {
         rawStylesField = fields["styles"];
-        try { const t = JSON.parse(fields["styles"]); if (Array.isArray(t)) requestedStyles = t; } catch {}
+        try {
+          const t = JSON.parse(fields["styles"]);
+          if (Array.isArray(t)) requestedStyles = t;
+        } catch {}
       } else if (fields["style"] != null) {
         rawStylesField = fields["style"];
-        requestedStyles = [ String(fields["style"]) ];
+        requestedStyles = [String(fields["style"])];
       }
 
       if (fields["compose_margin"] != null) {
@@ -347,12 +382,17 @@ export default async function handler(req, res) {
       }
     } else if (ctype.includes("application/json")) {
       const body = JSON.parse((await readRawBody(req)).toString("utf8") || "{}");
-      const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/,"");
+      const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/, "");
       if (!b64) return res.status(400).json({ error: "Kein Bild empfangen." });
       sourceBuffer = Buffer.from(b64, "base64");
 
-      if (Array.isArray(body.styles)) { rawStylesField = JSON.stringify(body.styles); requestedStyles = body.styles; }
-      else if (typeof body.style === "string") { rawStylesField = body.style; requestedStyles = [ body.style ]; }
+      if (Array.isArray(body.styles)) {
+        rawStylesField = JSON.stringify(body.styles);
+        requestedStyles = body.styles;
+      } else if (typeof body.style === "string") {
+        rawStylesField = body.style;
+        requestedStyles = [body.style];
+      }
 
       if (body.compose_margin != null) {
         const v = parseFloat(body.compose_margin);
@@ -365,37 +405,39 @@ export default async function handler(req, res) {
     // Diagnose: Rohdaten
     DIAG.request_styles_sent_raw = rawStylesField ?? null;
 
-    // Fallback: Wenn kein Stil im Body kam, nutze ggf. Header oder Query NUR für Diagnose/Tests
+    // Fallback: Header/Query nur wenn im Body nichts war
     if ((!requestedStyles || !requestedStyles.length) && styleHeaderRaw) {
-      requestedStyles = [ String(styleHeaderRaw) ];
+      requestedStyles = [String(styleHeaderRaw)];
       rawStylesField = String(styleHeaderRaw);
     }
     if ((!requestedStyles || !requestedStyles.length) && styleQueryRaw) {
-      requestedStyles = [ String(styleQueryRaw) ];
+      requestedStyles = [String(styleQueryRaw)];
       rawStylesField = String(styleQueryRaw);
     }
 
     // Normalisieren + validieren
-    let normalized = Array.isArray(requestedStyles) ? requestedStyles.map(normalizeStyle).filter(Boolean) : [];
+    let normalized = Array.isArray(requestedStyles)
+      ? requestedStyles.map(normalizeStyle).filter(Boolean)
+      : [];
     // Duplikate raus
     normalized = Array.from(new Set(normalized));
     // Nur erlaubte
-    let filtered = normalized.filter(s => ALLOWED.includes(s));
+    let filtered = normalized.filter((s) => ALLOWED.includes(s));
 
     // Diagnose
     DIAG.request_styles_array = normalized;
     DIAG.style_header = styleHeaderRaw || "";
-    DIAG.style_query  = styleQueryRaw  || "";
+    DIAG.style_query = styleQueryRaw || "";
 
     if (filtered.length === 0) {
-      // Kein gültiger Stil → Neon als Fallback (wie bisher)
+      // Kein gültiger Stil → Neon als Fallback
       filtered = ["neon"];
       DIAG.fallback_used = true;
     }
 
     // Bild vorbereiten
     const inputPng = await sharp(sourceBuffer)
-      .resize(SIZE, SIZE, { fit: "contain", background: { r:0,g:0,b:0,alpha:0 } })
+      .resize(SIZE, SIZE, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
       .png()
       .toBuffer();
 
@@ -409,12 +451,18 @@ export default async function handler(req, res) {
     const previews = {};
     const failed = [];
     for (const style of filtered) {
-      await sleep(150 + Math.round(Math.random()*300));
+      await sleep(150 + Math.round(Math.random() * 300));
+
+      // Stil-Baustein holen
+      const pObj = prompts[style] || prompts["natural"];
+      const positive = pObj?.prompt || "";
+      const negative = pObj?.negative || "";
+      const promptText = negative ? `${positive}\n\nNegative prompt: ${negative}` : positive;
 
       const form = new FormData();
       form.set("model", "gpt-image-1");
       form.set("image", new File([imageForEdit], "image.png", { type: "image/png" }));
-      form.set("prompt", prompts[style] || prompts["natural"] || "");
+      form.set("prompt", promptText);
       form.set("n", "1");
       form.set("size", "1024x1024");
 
@@ -438,20 +486,22 @@ export default async function handler(req, res) {
     if (Object.keys(previews).length === 0) {
       setDiagHeaders(res, {
         styleHeader: styleHeaderRaw,
-        styleQuery:  styleQueryRaw,
+        styleQuery: styleQueryRaw,
         normalized,
         finalStyle,
-        version: VERSION
+        version: VERSION,
       });
-      return res.status(502).json({ success: false, error: "Alle Stile fehlgeschlagen.", diag: DIAG });
+      return res
+        .status(502)
+        .json({ success: false, error: "Alle Stile fehlgeschlagen.", diag: DIAG });
     }
 
     setDiagHeaders(res, {
       styleHeader: styleHeaderRaw,
-      styleQuery:  styleQueryRaw,
+      styleQuery: styleQueryRaw,
       normalized,
       finalStyle,
-      version: VERSION
+      version: VERSION,
     });
 
     return res.status(200).json({
@@ -460,20 +510,21 @@ export default async function handler(req, res) {
       failed,
       compose_margin: margin,
       diag: DIAG,
-      version: VERSION
+      version: VERSION,
     });
   } catch (err) {
     console.error("generate-fix.js error:", err);
-    // Versuche auch im Fehlerfall Header mitzugeben
     try {
       setDiagHeaders(res, {
         styleHeader: styleHeaderRaw,
-        styleQuery:  styleQueryRaw,
+        styleQuery: styleQueryRaw,
         normalized: [],
         finalStyle: "",
-        version: VERSION
+        version: VERSION,
       });
-    } catch(_) {}
-    return res.status(500).json({ error: "Interner Serverfehler", diag: DIAG || null, version: VERSION });
+    } catch (_) {}
+    return res
+      .status(500)
+      .json({ error: "Interner Serverfehler", diag: DIAG || null, version: VERSION });
   }
 }
