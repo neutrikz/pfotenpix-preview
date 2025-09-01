@@ -137,97 +137,97 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
 
   return canvas;
 }
-// ===== Prompts =====
+
+
+
+
+
+
+
+// ===== Prompts (Identity-Lock + Neon-Glow) =====
 function buildPrompts () {
-  // Universelle Komposition – passt für Hoch- und Querformat
+  // Universelle Komposition (für Hoch/Quer croppbar)
   const comp =
     "Komposition: Motiv streng mittig, vollständig sichtbar. " +
-    "Motivgröße: höchstens 55% der Bildhöhe und 50% der Bildbreite, " +
-    "auf allen Seiten großzügiger Negativraum (25–40%). " +
-    "Kein enger Beschnitt, keine Rahmen, Hintergrund nahtlos erweitern. " +
-    "Eignet sich für spätere Hoch-/Querformat-Crops.";
+    "Motivgröße ≤ 55% der Bildhöhe und ≤ 50% der Bildbreite; " +
+    "auf allen Seiten 25–40% Negativraum. Kein enger Beschnitt, keine Rahmen; " +
+    "Hintergrund nahtlos erweitern.";
 
-  // Harte Identitäts-/Anatomie-Constraints
-  const identity =
+  // *** Harter Identity-Lock: Proportionen + Fellmuster exakt übernehmen ***
+  const identityLock =
     "Exakte Wiedererkennbarkeit des realen Haustiers aus der Vorlage. " +
-    "Gesichtsproportionen NICHT ändern: Augenabstand, Augenform/-größe, " +
-    "Nasenbreite und -position, Stop/Maske, Maullänge, Stirn- und Backenkontur. " +
-    "Ohrenform und -Winkel beibehalten. " +
-    "Fellfarben und -zeichnung der MITTELTÖNE unverfälscht erhalten; " +
-    "charakteristische Abzeichen (Brustfleck, Maske, Socken/Strümpfe, Blesse) " +
-    "genau nach Vorlage. " +
-    "Augenfarbe natürlich, klare Catchlights erlaubt. " +
-    "Keine Accessoires, keine Typografie/Logos, keine neuen Vordergrundobjekte, " +
-    "kein Rasse-Morphing.";
+    "Anatomie NICHT verändern: Augenabstand (Pupille-zu-Pupille), Augenform/-größe, " +
+    "Nasenbreite/-position, Stop/Maske, Stirn-/Backenkontur, Maullänge, " +
+    "Jowl-/Schnauzenvolumen, Ohrform und Ohrwinkel exakt beibehalten. " +
+    "Fell in den MITTELTÖNEN farblich und strukturell wie im Foto; " +
+    "charakteristische Abzeichen 1:1 übernehmen (Blesse/Breite, Brustfleck-Form, " +
+    "Maskenkante, weiße Socken/Höhe an den Läufen, Sattel/Brindle/Tricolor-Grenzen). " +
+    "Asymmetrien und kleine Unregelmäßigkeiten unbedingt erhalten. " +
+    "Augenfarbe natürlich; klare Catchlights erlaubt. " +
+    "Kein Rasse-Morphing, keine Cartoonisierung, keine Glättung der Fellstruktur.";
 
-  // Wie Neon wirken darf (additiv, nicht recolor)
+  // Neon darf nur additiv in den Lichtern „aufsitzen“
   const neonDiscipline =
-    "Neon-Effekt ausschließlich ADDITIV in Lichtern/Rim-Lights (Screen/Lighten). " +
-    "Mitteltöne/Albedo des Fells NICHT global umfärben; weiße/helle Partien bleiben naturgetreu. " +
-    "Glühen/Halation fein, Fellkanten und Schnurrhaare scharf, kein Oversoften.";
+    "Neon ausschließlich ADDITIV auf Highlights/Rim-Kanten (Screen/Lighten, ≤60% Opazität). " +
+    "Mitteltöne/Fell-Albedo NICHT global umfärben (Hue-Shift in Mitteltönen < ±6°). " +
+    "Weiße/helle Partien bleiben neutral; schwarze/dunkle Partien bleiben dunkel. " +
+    "Fellkanten und Schnurrhaare scharf, kein Oversoften, keine Halos.";
 
-  // Drucktaugliche, ruhige Technik
+  // Qualität/Technik
   const quality =
-    "Studioqualität, fotorealistische Details, sanfte lokale Tonwerte, " +
-    "saubere Kanten, sRGB. 85mm-Porträtcharakter, f/5.6 Look, subtile Vignette.";
+    "Studioqualität, fotorealistische Details, differenzierte Mikrofell-Struktur, " +
+    "sanfte lokale Tonwertsteuerung, saubere Kanten, sRGB. 85-mm-Porträtcharakter, " +
+    "subtile Vignette; keine Artefakte.";
 
   return {
-    // ——— NEON (weicher Glow, stärkere Hintergrund-Stimmung, aber identitäts-treu) ———
+    // ——— NEON (Glow-Hintergrund + strenges Identity-Lock) ———
     neon: [
-      "Galerietauglicher Neon-Look mit balancierten, additiven Rim-Lichtern:",
-      "linke Seite kräftiges Cyan/Türkis, rechte Seite sattes Magenta/Pink;",
-      "optional dezenter warmer Orange-Kicker nur in Highlights.",
+      "Galerietauglicher Neon-Look mit balancierten Rim-Lichtern: " +
+      "links kräftiges Cyan/Türkis, rechts sattes Magenta/Pink; " +
+      "optional dezenter warmer Orange-Kicker nur in den Highlights.",
       neonDiscipline,
-      // Hintergrund = mehr Glow statt Rays
-      "Hintergrund: weicher Indigo-zu-Pflaume Farbverlauf mit deutlichem Glow, " +
-      "subtile atmosphärische Dunstschleier und sanftes Bokeh, keine harten Lichtstrahlen, " +
-      "keine geometrischen Pattern. Leichtes Bloom um helle Kanten.",
-      identity,
+      // Hintergrund = weicher Glow (kein Ray-Fächer)
+      "Hintergrund: weicher Indigo-zu-Pflaume-Farbverlauf mit deutlich sichtbarem Glow, " +
+      "atmosphärischer Dunst/Bokeh, KEINE harten Lichtstrahlen oder geometrischen Muster.",
+      identityLock,
       comp,
       quality
     ].join(" "),
 
-    // weitere Stile (unverändert gern anpassen)
+    // Weitere Stile (falls du sie nutzt) – mit identischem Identity-Lock:
     cinematic: [
-      "Filmischer Look mit moderater Teal/Orange-Gradierung, feinem Filmkorn, " +
-      "leicht anamorphem Bokeh im Hintergrund, sanftem Bloom.",
-      "Schwärzen tief mit Zeichnung; Mitteltöne natürlich.",
-      identity, comp, quality
+      "Filmischer Look, moderate Teal/Orange-Gradierung, feines Filmkorn, sanfter Bloom.",
+      "Schwärzen tief mit Zeichnung; Mitteltöne natürlich.", identityLock, comp, quality
     ].join(" "),
 
     lowkey: [
       "Dramatisches Low-Key-Studio auf tiefem Graphit/Schwarz mit Rembrandt/Edge-Licht.",
-      "Gesicht/Brust deutlich lesbar, kein Absaufen, dezenter Bloom.",
-      identity, comp, quality
+      "Gesicht/Brust klar lesbar; kein Absaufen.", identityLock, comp, quality
     ].join(" "),
 
     highkey: [
       "Helles High-Key-Porträt: sehr weiche große Lichtquellen, fast weißer Hintergrund, " +
-      "sanfte Schatten, leichter Glow.",
-      identity, comp, quality
+      "sanfte Schatten, leichter Glow.", identityLock, comp, quality
     ].join(" "),
 
     pastell: [
-      "Eleganter Pastell-Look: matte, cremige Verläufe (Sage/Sand/Blush), diffuses weiches Licht, " +
-      "painterly-Textur nur im Hintergrund.",
-      identity, comp, quality
+      "Eleganter Pastell-Look: matte, cremige Verläufe (Sage/Sand/Blush), diffuses weiches Licht; " +
+      "painterly-Textur nur im Hintergrund.", identityLock, comp, quality
     ].join(" "),
 
     vintage: [
-      "Zeitloser Vintage-Look: zarter Elfenbein-/Sepia-Ton, feines analoges Grain, behutsame Halation. " +
-      "Hintergrund darf Papier/Faser andeuten.",
-      identity, comp, quality
+      "Zarter Elfenbein/Sepia-Ton, feines analoges Grain, behutsame Halation; " +
+      "Hintergrund darf Papier/Faser andeuten.", identityLock, comp, quality
     ].join(" "),
 
     steampunk: [
-      "Warmer Steampunk-Ton im HINTERGRUND (unscharfes Messing/Kupfer-Bokeh), " +
-      "Wolfram-Key + kühlerer Rim; Mitteltöne des Fells unverfälscht.",
-      identity, comp, quality
+      "Warmer Steampunk-Ton ausschließlich im HINTERGRUND (unscharfes Messing/Kupfer-Bokeh). " +
+      "Wolfram-Key + kühlerer Rim; Mitteltöne am Fell unverfälscht.", identityLock, comp, quality
     ].join(" "),
 
     natural: [
       "Neutraler Studio-Look: ausgewogene Farben, sanfter Verlaufshintergrund, subtile Klarheit.",
-      identity, comp, quality
+      identityLock, comp, quality
     ].join(" ")
   };
 }
