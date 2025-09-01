@@ -138,81 +138,82 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
   return canvas;
 }
 
-/* ==============================================================
-   PFPX – Prompt-Baustein + 1-Pass Pipeline (Drop-in für generate-fix)
+/* =======================================================================
+   PFPX – Prompt-Baustein (Drop-in für generate-fix, 1-Pass)
    Fokus:
-   - Quer/Hoch croppbar (viel Negativraum)
-   - NEON mit stärkerem Hintergrund-Neon (ohne Fell-Mitteltöne zu verfärben)
-   - Maximale Wiedererkennbarkeit (Landmark-Lock)
-   ============================================================== */
+   - Stärkere Wiedererkennbarkeit (Landmark/Pattern-Lock)
+   - Kräftigerer NEON-Hintergrund ohne Fell-Midtöne zu verfärben
+   - Croppbar für Hoch und Quer (viel Negativraum)
+   ======================================================================= */
 
-/* ---------- Negatives: unterbinden Cartoon/Geometrie-Shift ---------- */
+/* ---------- Negatives (unterbinden Cartoon/Drift/Recolor) ---------- */
 const PFPX_NEG = [
-  // Stil/Rendertype
-  "cartoon, anime, 3D render, vector art, painting, sketch, lineart",
-  // Uncanny/Material
-  "plastic, waxy, porcelain, doll-like, uncanny valley, oversoften, airbrush skin",
-  // Geometrie-Fehler & Breed-Drift
-  "breed change, altered skull, muzzle reshaped, wrong mask pattern",
-  "altered inter-ocular distance, oversized eyes, baby-face eyes, closer eyes, extra eyes",
-  "asymmetric eyes, cross-eyed, deformed pupils, misplaced nose",
-  // Komposition & Artefakte
-  "tight crop, macro close-up, cut ears, cut whiskers, frame, border, text, logo, watermark",
-  "global midtone recolor, full-body color wash, blown highlights, crushed blacks",
-  "blur, motion blur, noise, smudge, smear, over-sharpen halos, ringing"
+  // Stil / Render
+  "cartoon, anime, comic, 3D render, vector art, painting, sketch, lineart",
+  // Uncanny / Material
+  "plastic, waxy, porcelain, doll-like, uncanny valley, oversoften, airbrush",
+  // Geometrie / Breed-Drift / Augen
+  "breed change, skull reshaped, wrong muzzle, altered blaze stripe, wrong mask pattern",
+  "altered inter-ocular distance, large eyes, baby-doll eyes, closer eyes, extra eyes",
+  "misplaced nose, asymmetric eyes, deformed pupils",
+  // Recolor / Tonwerte
+  "global midtone recolor, coat recolor, color wash over midtones, blown highlights, crushed blacks",
+  // Komposition / Artefakte
+  "tight crop, macro close-up, cut ears, cut whiskers, frame, border, caption, text, logo, watermark",
+  "blur, motion blur, smear, smudge, ringing, over-sharpen halos, heavy noise"
 ].join(", ");
 
-/* ---------- Stil-Prompts (konservativ; Landmark-/Coat-/Comp hart) ---------- */
+/* ---------- Stil-Prompts: konservativ, mit hartem Landmark-/Pattern-Lock ---------- */
 function buildPrompts() {
-  // Komposition für Hoch/Quer-Crop:
-  // viel seitlicher Raum (>> Quer-Crop) + oben/unten Luft (>> Hoch-Crop bleibt sicher)
+  // Komposition mit viel Luft (für Hoch & Quer)
   const comp =
     "Composition: subject perfectly centered and fully visible; " +
     "animal occupies ~16–22% of frame width and height; " +
     "keep ~40–55% negative space on left and right, and ~20–30% headroom/footroom; " +
-    "no tight crop, no borders; extend background seamlessly for future crops; " +
-    "pose neutral, facing camera or slight 3/4 without leaning.";
+    "no tight crop or borders; extend background seamlessly for future crops; " +
+    "neutral, stable pose (front or slight 3/4), no leaning.";
 
-  // Strenger Landmark/ID-Lock (Augenabstand etc.)
+  // Landmark-Lock (verhindert andere Gesichtsgeometrie/Augenabstand)
   const identity =
-    "Identity lock: reproduce the exact animal from the photo; " +
-    "preserve face landmarks 1:1 — skull silhouette, ear base width and ear size, " +
-    "muzzle length/width ratio, nasal bridge and nose shape/position, " +
-    "inter-ocular distance and natural eye size (no enlargement), " +
-    "forehead wrinkle & mask topology; keep natural eye colour and catchlights.";
+    "Identity lock: reproduce the exact animal from the photo. " +
+    "Preserve face landmarks 1:1 — skull silhouette, ear base width and ear tip angle, " +
+    "muzzle length/width ratio, nasal bridge and nose leather shape/position, " +
+    "inter-ocular distance and adult eye size (do not enlarge), " +
+    "forehead wrinkle & blaze stripe topology, cheek mask edges and whisker pads.";
 
-  // Fell-Mitteltöne unverfälscht
+  // Fell/Pattern-Lock (Brust/Beine/Masken dürfen NICHT umgefärbt werden)
   const coat =
-    "Coat fidelity: keep midtone albedo and characteristic markings intact " +
-    "(chest and legs remain their original beige/white/cream/brown as in the photo); " +
-    "apply style mainly in highlights and shadows; do not recolor midtones.";
+    "Coat fidelity: keep midtone albedo and all characteristic markings and white patches " +
+    "(chest wedge, legs, blaze/mask) exactly as in the photo. " +
+    "Apply style primarily to highlights and shadows; do not recolor midtones.";
 
   const quality =
     "Photorealistic studio detail, crisp whiskers and fur edges, clean sRGB, " +
-    "gentle local tone mapping, no excessive sharpening.";
+    "gentle local tone mapping, subtle clarity, no excessive sharpening.";
 
   return {
-    // ——— NEON (Cyan/Magenta, starker Hintergrund-Neon) ———
+    /* ---------------------- NEON (verstärkt) ---------------------- */
     neon: [
-      "Premium neon portrait: strong dual additive rim lights — cyan/turquoise from camera-left, " +
-        "saturated magenta/pink from camera-right; optional warm orange kicker only in speculars.",
-      // Hintergrund-Neon-Bonus, ohne Fell-Midtöne umzufärben:
-      "Background neon boost: luminous dark indigo→violet gradient with visible cyan/magenta haze, " +
-        "soft radial glow and subtle volumetric fog; background glow stronger than subject fill; " +
+      "Premium neon portrait: dual additive rim lights — strong cyan/turquoise from camera-left " +
+        "and saturated magenta/pink from camera-right; optional warm orange kicker only in speculars.",
+      // **Hintergrund deutlich stärker**, Fell-Midtöne neutral halten
+      "Background neon boost: highly luminous indigo→violet gradient with saturated cyan/magenta haze, " +
+        "soft radial glow, subtle volumetric fog and faint bokeh light streaks; " +
+        "background glow intensity high; edge glow ++; " +
         "do not push neon into midtones of the coat.",
-      "Additive lighting look (screen/lighten) with halation along contours; " +
-        "keep eyes clear with coloured catchlights; no global midtone colour shift.",
+      "Additive lighting (screen/lighten) with halation along contours; " +
+        "clear eyes with coloured catchlights; no global midtone colour shift on the subject.",
       identity, coat, comp, quality
     ].join(" "),
 
     cinematic: [
-      "Cinematic grade: subtle teal/orange, fine film grain, soft highlight bloom; deep but detailed blacks; slight vignette.",
+      "Cinematic grade: restrained teal/orange, fine grain, soft highlight bloom; deep but detailed blacks; slight vignette.",
       identity, coat, comp, quality
     ].join(" "),
 
     lowkey: [
       "Dramatic low-key studio on graphite/near-black with controlled Rembrandt/edge lighting; " +
-      "face and chest readable, no full silhouette.",
+      "face and chest readable, no silhouette.",
       identity, coat, comp, quality
     ].join(" "),
 
@@ -227,41 +228,43 @@ function buildPrompts() {
     ].join(" "),
 
     vintage: [
-      "Timeless vintage: subtle ivory/soft sepia, fine analog grain, restrained halation; paper/fiber hint only in background.",
+      "Timeless vintage: subtle ivory/soft sepia, fine analog grain, restrained halation; background paper/fiber hint allowed.",
       identity, coat, comp, quality
     ].join(" "),
 
     steampunk: [
-      "Warm steampunk tone: brass/copper palette in the background (soft industrial bokeh); warm tungsten key plus a cooler rim.",
+      "Warm steampunk tone: brass/copper palette mainly in the background (soft industrial bokeh); " +
+      "warm tungsten key plus cooler rim.",
       identity, coat, comp, quality
     ].join(" "),
 
     natural: [
-      "Refined neutral studio look: balanced colour, soft backdrop gradient, subtle clarity; light vignette for depth.",
+      "Refined neutral studio look: balanced colour, soft backdrop gradient, light vignette for depth.",
       identity, coat, comp, quality
     ].join(" "),
   };
 }
 
 /**
- * 1-Pass Pipeline (auch NEON). Erwartet eine Render-Funktion:
+ * 1-Pass Pipeline (auch NEON): Du rufst weiter nur EIN Render auf.
+ * Erwartet deine Render-Funktion:
  *   render({ image, prompt, negative, strength, cfg, seed, width, height })
- * Rückgabe = Bildobjekt/Buffer/Base64 (wie dein Renderer liefert).
  */
 async function runPipeline(image, style, seed, render) {
   const PROMPTS = buildPrompts();
 
-  // Portrait 3:4 mit **viel** Luft -> Hoch UND Quer croppbar
+  // Portrait 3:4 mit sehr viel Luft -> Hoch & Quer sicher croppbar
   const WIDTH  = 1024;
   const HEIGHT = 1365;
 
-  // Landmark-freundliche Defaults (halten Augenabstand/Masken stabil)
-  let strength = 0.31; // 0.30–0.33: wenig Geometrie-Drift, genug Look
-  let cfg      = 2.7;  // 2.6–2.9: Stil präsent, ohne Fell-Mitteltöne zu verfärben
+  // Standard-Werte: Landmark-freundlich
+  let strength = 0.30;  // 0.28–0.32: je niedriger, desto ID-treuer
+  let cfg      = 2.7;   // 2.5–2.9: kleiner = weniger globaler Stil-Drift
 
   if (style === 'neon') {
-    strength = 0.32;   // minimal höher für sauberen Neon-Glow
-    cfg      = 2.8;    // etwas mehr Look, aber noch ID-freundlich
+    // NEON kräftiger Hintergrund, aber weiterhin ID-schonend
+    strength = 0.30;    // genug Glow ohne Geometrie-Shift
+    cfg      = 2.75;    // etwas mehr Look, Fell-Midtöne bleiben stabil
   }
 
   const prompt = PROMPTS[style] || PROMPTS.natural;
@@ -283,6 +286,7 @@ async function runPipeline(image, style, seed, render) {
 /* ===== Exports (ESM & CJS) ===== */
 export { PFPX_NEG, buildPrompts, runPipeline };
 try { if (typeof module !== "undefined") module.exports = { PFPX_NEG, buildPrompts, runPipeline }; } catch {}
+
 
 
 
