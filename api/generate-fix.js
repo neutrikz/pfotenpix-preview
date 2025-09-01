@@ -142,31 +142,35 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
 
 
 
+// generate-fix.js — Prompt-Builder + negativer Prompt (benannter Export)
 
+/** Negativer Prompt – optional von deiner Pipeline mitgeschickt */
+export const PFPX_NEG =
+  "wrong anatomy, breed morphing, changed eye distance, changed eye shape, distorted proportions, " +
+  "cartoon, anime, plastic fur, waxy skin, oversoften, blur, sharpen halos, posterization, banding, " +
+  "strong color wash on midtones, harsh light beams, lens flare, text, logo, watermark, " +
+  "extra limbs, duplicated eyes";
 
-// ===== Prompts (Identity-Lock + Neon-Glow) =====
-function buildPrompts () {
-  // Universelle Komposition (für Hoch/Quer croppbar)
+/** Prompts mit starkem Identity-Lock (Augenabstand, Masken/Abzeichen, Brustfleck etc.) */
+export function buildPrompts () {
+  // Universelle Komposition – für Hoch/Quer croppbar
   const comp =
     "Komposition: Motiv streng mittig, vollständig sichtbar. " +
     "Motivgröße ≤ 55% der Bildhöhe und ≤ 50% der Bildbreite; " +
     "auf allen Seiten 25–40% Negativraum. Kein enger Beschnitt, keine Rahmen; " +
     "Hintergrund nahtlos erweitern.";
 
-  // *** Harter Identity-Lock: Proportionen + Fellmuster exakt übernehmen ***
+  // Harter Identity-Lock: Proportionen & Abzeichen exakt übernehmen
   const identityLock =
     "Exakte Wiedererkennbarkeit des realen Haustiers aus der Vorlage. " +
-    "Anatomie NICHT verändern: Augenabstand (Pupille-zu-Pupille), Augenform/-größe, " +
-    "Nasenbreite/-position, Stop/Maske, Stirn-/Backenkontur, Maullänge, " +
-    "Jowl-/Schnauzenvolumen, Ohrform und Ohrwinkel exakt beibehalten. " +
-    "Fell in den MITTELTÖNEN farblich und strukturell wie im Foto; " +
-    "charakteristische Abzeichen 1:1 übernehmen (Blesse/Breite, Brustfleck-Form, " +
-    "Maskenkante, weiße Socken/Höhe an den Läufen, Sattel/Brindle/Tricolor-Grenzen). " +
-    "Asymmetrien und kleine Unregelmäßigkeiten unbedingt erhalten. " +
-    "Augenfarbe natürlich; klare Catchlights erlaubt. " +
+    "Anatomie NICHT verändern: Augenabstand (Pupille-zu-Pupille), Augenform/-größe, Nasenbreite/-position, " +
+    "Stop/Maske, Stirn-/Backenkontur, Maullänge, Jowl-/Schnauzenvolumen, Ohrform und Ohrwinkel exakt beibehalten. " +
+    "Fell in den MITTELTÖNEN farblich und strukturell wie im Foto; charakteristische Abzeichen 1:1 übernehmen " +
+    "(Blesse/Breite, Brustfleck-Form, Maskenkante, weiße Socken/Höhe an den Läufen, Sattel/Brindle/Tricolor-Grenzen). " +
+    "Asymmetrien und kleine Unregelmäßigkeiten unbedingt erhalten. Augenfarbe natürlich; klare Catchlights erlaubt. " +
     "Kein Rasse-Morphing, keine Cartoonisierung, keine Glättung der Fellstruktur.";
 
-  // Neon darf nur additiv in den Lichtern „aufsitzen“
+  // Neon soll nur additiv auf Lichtern liegen – Mitteltöne schützen
   const neonDiscipline =
     "Neon ausschließlich ADDITIV auf Highlights/Rim-Kanten (Screen/Lighten, ≤60% Opazität). " +
     "Mitteltöne/Fell-Albedo NICHT global umfärben (Hue-Shift in Mitteltönen < ±6°). " +
@@ -176,17 +180,16 @@ function buildPrompts () {
   // Qualität/Technik
   const quality =
     "Studioqualität, fotorealistische Details, differenzierte Mikrofell-Struktur, " +
-    "sanfte lokale Tonwertsteuerung, saubere Kanten, sRGB. 85-mm-Porträtcharakter, " +
-    "subtile Vignette; keine Artefakte.";
+    "sanfte lokale Tonwertsteuerung, saubere Kanten, sRGB. 85-mm-Porträtcharakter, subtile Vignette; keine Artefakte.";
 
   return {
-    // ——— NEON (Glow-Hintergrund + strenges Identity-Lock) ———
+    // —— NEON (Glow-Hintergrund + strenges Identity-Lock) ——
     neon: [
       "Galerietauglicher Neon-Look mit balancierten Rim-Lichtern: " +
       "links kräftiges Cyan/Türkis, rechts sattes Magenta/Pink; " +
       "optional dezenter warmer Orange-Kicker nur in den Highlights.",
       neonDiscipline,
-      // Hintergrund = weicher Glow (kein Ray-Fächer)
+      // Hintergrund: weicher Glow (kein Strahlen-Fächer)
       "Hintergrund: weicher Indigo-zu-Pflaume-Farbverlauf mit deutlich sichtbarem Glow, " +
       "atmosphärischer Dunst/Bokeh, KEINE harten Lichtstrahlen oder geometrischen Muster.",
       identityLock,
@@ -194,35 +197,41 @@ function buildPrompts () {
       quality
     ].join(" "),
 
-    // Weitere Stile (falls du sie nutzt) – mit identischem Identity-Lock:
+    // —— Weitere Stile (falls genutzt) ——
     cinematic: [
-      "Filmischer Look, moderate Teal/Orange-Gradierung, feines Filmkorn, sanfter Bloom.",
-      "Schwärzen tief mit Zeichnung; Mitteltöne natürlich.", identityLock, comp, quality
+      "Filmischer Look, moderate Teal/Orange-Gradierung, feines Filmkorn, sanfter Bloom. " +
+      "Schwärzen tief mit Zeichnung; Mitteltöne natürlich.",
+      identityLock, comp, quality
     ].join(" "),
 
     lowkey: [
-      "Dramatisches Low-Key-Studio auf tiefem Graphit/Schwarz mit Rembrandt/Edge-Licht.",
-      "Gesicht/Brust klar lesbar; kein Absaufen.", identityLock, comp, quality
+      "Dramatisches Low-Key-Studio auf tiefem Graphit/Schwarz mit Rembrandt/Edge-Licht. " +
+      "Gesicht/Brust klar lesbar; kein Absaufen.",
+      identityLock, comp, quality
     ].join(" "),
 
     highkey: [
       "Helles High-Key-Porträt: sehr weiche große Lichtquellen, fast weißer Hintergrund, " +
-      "sanfte Schatten, leichter Glow.", identityLock, comp, quality
+      "sanfte Schatten, leichter Glow.",
+      identityLock, comp, quality
     ].join(" "),
 
     pastell: [
       "Eleganter Pastell-Look: matte, cremige Verläufe (Sage/Sand/Blush), diffuses weiches Licht; " +
-      "painterly-Textur nur im Hintergrund.", identityLock, comp, quality
+      "painterly-Textur nur im Hintergrund.",
+      identityLock, comp, quality
     ].join(" "),
 
     vintage: [
       "Zarter Elfenbein/Sepia-Ton, feines analoges Grain, behutsame Halation; " +
-      "Hintergrund darf Papier/Faser andeuten.", identityLock, comp, quality
+      "Hintergrund darf Papier/Faser andeuten.",
+      identityLock, comp, quality
     ].join(" "),
 
     steampunk: [
       "Warmer Steampunk-Ton ausschließlich im HINTERGRUND (unscharfes Messing/Kupfer-Bokeh). " +
-      "Wolfram-Key + kühlerer Rim; Mitteltöne am Fell unverfälscht.", identityLock, comp, quality
+      "Wolfram-Key + kühlerer Rim; Mitteltöne am Fell unverfälscht.",
+      identityLock, comp, quality
     ].join(" "),
 
     natural: [
@@ -231,13 +240,6 @@ function buildPrompts () {
     ].join(" ")
   };
 }
-
-
-/* ===== Exports (ESM & CJS) ===== */
-export { PFPX_NEG, buildPrompts, runPipeline };
-try { if (typeof module !== "undefined") module.exports = { PFPX_NEG, buildPrompts, runPipeline }; } catch {}
-
-
 
 
 
