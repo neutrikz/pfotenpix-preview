@@ -158,23 +158,22 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
 
 
 
-
 /**
- * Prompt-Bausteine (Half-Portrait + Landscape-safe + Neon-Glow – klein + kräftig)
+ * Prompt-Bausteine (Half-Portrait + Landscape-safe + kräftiger Neon-Glow)
  */
 function buildPrompts() {
-  // Querformat-tauglich + strenge Größenlimits (deutlich kleiner)
+  // Querformat-tauglich + harte Größenlimits
   const compCommon =
     "Komposition: streng mittig, komplette Kopfform sichtbar, nicht heranzoomen. " +
-    "Motiv ≤ 28–32% der Bildbreite und ≤ 30–34% der Bildhöhe; links und rechts jeweils mindestens 20–25% freier Raum. " +
-    "Rundum 40–50% Negativraum, besonders seitlich; muss als 16:9-Landscape-Crop sicher funktionieren. " +
-    "Keine engen Beschnitte, kein Fill-Frame, keine Rahmen, keine schräge Perspektive.";
+    "Motiv ≤ 32–36% der Bildbreite und ≤ 36–40% der Bildhöhe; rundum 35–45% Negativraum. " +
+    "Muss auch als 16:9-Landscape-Crop funktionieren – links und rechts ausreichend Luft lassen, " +
+    "keine Elemente nahe an den Bildrändern. Keine engen Beschnitte, keine Rahmen, keine schräge Perspektive.";
 
   // Half-Portrait klar erzwingen
   const compBust =
     "Framing: Half-Portrait (Brust bis Kopf). Oberer Brustbereich sichtbar; " +
     "kein Head-only, keine Pfoten/Beine/Unterkörper, kein Ganzkörper, kein liegendes Vollformat. " +
-    "Kopf und Brust vorn klar, Hintergrund weich.";
+    "Kopf und Brust vorn klar, Hintergrund weich und großzügig.";
 
   // Wiedererkennbarkeit / Identität
   const identity =
@@ -187,27 +186,26 @@ function buildPrompts() {
     "Studioqualität, sRGB, fein detaillierte Fellstruktur und Schnurrhaare, saubere Kanten, " +
     "sanfte lokale Tonwertsteuerung, kein Wachslook, kein Oversoften.";
 
-  // Negativliste – harte Anti-Closeup/Anti-Tight-Crop Sicherungen
+  // Negativliste – extra Anti-Closeup/Anti-Tight-Crop
   const negCommon =
     "full body, whole body, legs, paws, lower body, lying, " +
     "tight framing, tight crop, close crop, extreme close-up, macro portrait, face-only, head-only, " +
-    "fill frame, full-bleed, zoomed in, big head, oversized face, camera too close, center crop, cut off ears, " +
+    "fill frame, full-bleed, zoomed in, enlarged face, subject touching frame edges, cropped ears, " +
     "fisheye, wide distortion, caricature, chibi, anime, 3d render, painting, oversaturated, posterized, " +
-    "watercolor, oil paint, lowres, jpeg artifacts, blurry, noise, banding, wrong breed, wrong coat color, " +
-    "wrong markings, mismatched eye spacing, asymmetric face, deformed anatomy, duplicate nose, extra ears";
+    "watercolor, oil paint, lowres, jpeg artifacts, blurry, noise, banding, " +
+    "wrong breed, wrong coat color, wrong markings, mismatched eye spacing, asymmetric face, " +
+    "deformed anatomy, duplicate nose, extra ears";
 
-  // NEON – deutlich heller/kräftiger, aber diffus (kein Strahlen-Gimmick)
+  // NEON – deutlich heller/diffuser Glow + stärkere Rims
   const neonBg =
-    "Hintergrund: sehr heller, leuchtender Neon-Glow-Verlauf von tiefem Indigo (links) zu kräftigem Violett–Magenta (rechts). " +
-    "Intensive, großflächige, aber diffuse Leuchthöfe; luminöser Dunst/atmosphärischer Schimmer; " +
-    "weiche Bloom-Höfe, dezente großflächige Bokeh/Dust-Partikel. " +
+    "Hintergrund: sehr heller, dennoch diffuser Neon-Glow-Verlauf von tiefem Indigo (links) zu Violett–Magenta (rechts). " +
+    "Großflächiger weicher Schimmer/Haze, sanfte Bloom-Höfe, dezente aber sichtbare großflächige Bokeh/Dust-Partikel. " +
     "Keine harten Lichtstrahlen, keine Laser/Godrays, keine Spotlights, keine Props.";
 
   const neonLight =
-    "Licht: sehr kräftige, gesättigte additive Rim-Lights – links brillante Cyan/Teal-Kante, rechts sattes Magenta/Pink; " +
-    "optionaler warmer Orange-Kicker in Highlights. " +
-    "Rim-Lights betonen Fellkanten deutlich, mit klaren glitzernden Mikro-Highlights; " +
-    "Mitteltöne/Fell-Albedo bleiben natürlich und lesbar (weiße/creme Bereiche bleiben neutral).";
+    "Licht: kräftige additive Rim-Lights – links intensives Cyan/Teal, rechts sattes Magenta/Pink; " +
+    "optional ein kleiner warmer Orange-Kicker in Highlights. " +
+    "Rims deutlich sichtbar an Fellkanten, aber Mitteltöne/Fell-Albedo bleiben lesbar (weiße/creme Bereiche bleiben neutral).";
 
   const neonPrompt = [
     "Galerie-taugliches Neon-Portrait desselben Tieres, fotorealistisch, Brust bis Kopf.",
@@ -222,7 +220,7 @@ function buildPrompts() {
   const neonNeg =
     negCommon + ", hard godrays, laser beams, spotlight rays, high-contrast poster look";
 
-  // Weitere Stile: ebenfalls landscape-safe + Half-Portrait (unverändert, aber mit kleiner Komposition)
+  // Weitere Stile – ebenfalls landscape-safe + Half-Portrait
   const cinematic = [
     "Filmischer Look mit sanfter Teal/Orange-Gradierung, feinem Filmkorn, " +
       "zarten anamorphischen Bokeh-Lichtern im Hintergrund, leichter Bloom.",
@@ -267,18 +265,16 @@ function buildPrompts() {
   ].join(" ");
 
   return {
-    neon: { prompt: neonPrompt, negative: neonNeg },
-    cinematic: { prompt: cinematic, negative: negCommon },
-    lowkey: { prompt: lowkey, negative: negCommon },
-    highkey: { prompt: highkey, negative: negCommon },
-    pastell: { prompt: pastell, negative: negCommon },
-    vintage: { prompt: vintage, negative: negCommon },
-    steampunk: { prompt: steampunk, negative: negCommon },
-    natural: { prompt: natural, negative: negCommon },
+    neon:      { prompt: neonPrompt,  negative: neonNeg },
+    cinematic: { prompt: cinematic,   negative: negCommon },
+    lowkey:    { prompt: lowkey,      negative: negCommon },
+    highkey:   { prompt: highkey,     negative: negCommon },
+    pastell:   { prompt: pastell,     negative: negCommon },
+    vintage:   { prompt: vintage,     negative: negCommon },
+    steampunk: { prompt: steampunk,   negative: negCommon },
+    natural:   { prompt: natural,     negative: negCommon },
   };
 }
-
-
 
 
 
@@ -326,7 +322,7 @@ export default async function handler(req, res) {
 
     const SIZE = 1024;
     // ► kleineres Start-Motiv (Landscape-safe): 0.38 ≈ 30% Motivfläche
-    const COMPOSE_MARGIN_DEFAULT = 0.38;
+    const COMPOSE_MARGIN_DEFAULT = 0.45;
 
     if (ctype.startsWith("multipart/form-data")) {
       const m = /boundary=([^;]+)/i.exec(ctype);
