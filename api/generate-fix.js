@@ -157,68 +157,80 @@ function buildPrompts() {
     "Drucktaugliche Studioqualität, detailreiches Fell, natürliche Mikrokontraste, sRGB, keine Artefakte, keine Überschärfung.";
 
   return {
-    // ——— NEON (Ziel wie dein Pug-Referenzbild) ———
+// ===== Prompts (Identität hart, Neon nur an Kanten, Motiv wieder kleiner) =====
+function buildPrompts() {
+  // Komposition bewusst klein halten → universell für Hoch/Quer
+  const comp =
+    "Komposition: Motiv streng mittig und vollständig sichtbar. Das Tier belegt nur ca. 18–22% der Bildfläche; links/rechts/oben/unten jeweils ca. 40–45% negativer Raum. Kein enger Beschnitt, kein Zoom, keine Rahmen. Hintergrund nahtlos erweitern.";
+
+  // Identität / Anatomie: hart
+  const identityHard =
+    "Identitätssperre: exakt dasselbe Tier aus der Vorlage. Kopfform, Stirn/Stop, Fanglänge, Ohrenstellung/-form, Augenform und Augenabstand, Nasenspiegel, Faltenverlauf/Maskenzeichnung, Abzeichen an Brust/Beinen und die Seiten-Asymmetrien bleiben unverändert. Keine neuen Accessoires, kein Text/Logo, keine zusätzlichen Objekte.";
+
+  // Gesichtstreue (Augen sind kritisch)
+  const faceLock =
+    "Gesichtstreue: Augenform und Iris-Muster wie in der Vorlage; Pupillengröße natürlich; keine Anime/Glubsch-Augen. Catchlights sauber, nicht übergroß. Nase und Faltenkanten präzise, Schnurrhaare einzeln sichtbar.";
+
+  // Fellfarben in den Mitteltönen nicht anfärben
+  const coatLock =
+    "Fellfarb-Treue: Mitteltöne der Fell-Albedo 1:1 wie im Original (creme/weiß/sand bleibt so). Neonfarben nur als additive Kantenlichter und Highlights; keine flächige Umfärbung der Mitteltöne, keine Farbbalken über Brust/Beinen.";
+
+  const quality =
+    "Studioqualität, fotorealistische Mikrodetails, saubere Kanten, sRGB, gleichmäßige Beleuchtung ohne Clipping, sanfte lokale Tonwertsteuerung, keine Überglättung.";
+
+  // Negativ-Leitplanke (wird oft mit ausgegeben)
+  const negative =
+    "Vermeide: Cartoon/Illustration/Plastiklook, übergroße Augen, veränderte Kopfform/Proportionen, falsche Fellzeichnung, harte globale Umfärbung, Posterisierung/Farbbänder, matschige Mitteltöne, Motion-Blur, Lens-Flare, Text/Logos/Watermarks.";
+
+  return {
+    // ——— NEON (Kantenlicht-Neon, Mitteltöne farbtreu) ———
     neon: [
-      "Galerietauglicher Neon-Look: starkes additives Rim-Light – links kräftiges Cyan/Türkis, rechts sattes Magenta/Pink; optional dezenter warmer Orange-Kicker im Licht.",
-      "WICHTIG: Neon nur als LICHT (Screen/Lighten), NICHT als Pigment. Mitteltöne/Fellgrundfarben bleiben unverändert; Weißanteile an Brust/Beinen bleiben weiß/creme.",
-      "Hintergrund: dunkler Indigo→Violett-Verlauf, fein texturiert und weich, ohne harte Strukturen.",
-      "Augen mit farbigen Catchlights, Fellkanten mit Glow/Halation, aber feine Haare/Schnurrhaare bleiben scharf.",
-      identityHard, artGuard, compBust, quality
+      "Galeriefähiger Neon-Look: kräftige zweifarbige additive Rim-Lights — links Cyan/Türkis, rechts Magenta/Pink; optional ein sehr dezenter warmer Orange-Kicker in den Highlights.",
+      "Lichtmathematik: Rim-Lights via Screen/Lighten nur an Konturen/Fellkanten und in den Spitzlichtern. Luminanz der Mitteltöne erhalten; keine Neon-Flächen auf Brust/Beinen.",
+      "Hintergrund: tiefer Indigo→Violett-Verlauf, weich und strukturlos.",
+      "Schärfe/Detail: Mikrokontrast im Fell; einzelne Schnurrhaare sichtbar; keine überschärften Halos; Glow/Halation fein dosiert.",
+      identityHard, faceLock, coatLock, comp, quality,
+      `Negativ: ${negative}`
     ].join(" "),
 
+    // Filmisch, moderat stilisiert – ebenfalls mit Identitäts-/Fell-Lock
     cinematic: [
-      "Filmischer Look: feine Teal/Orange-Gradierung, leichtes Filmkorn, dezente anamorphe Bokeh-Lichter hinten, sanfter Bloom.",
-      "Schwärzen tief mit Zeichnung; Fellmuster natürlich; keine harte Umfärbung der Mitteltöne.",
-      identityHard, artGuard, compBust, quality
+      "Filmischer Look: sanfte Teal-Orange-Gradierung, feines Filmkorn, leichte anamorphe Bokeh-Lichter, behutsamer Bloom.",
+      "Schwärzen tief mit Zeichnung, keine harte globale Umfärbung.",
+      identityHard, faceLock, coatLock, comp, quality, `Negativ: ${negative}`
     ].join(" "),
 
     lowkey: [
-      "Dramatisches Low-Key-Studio auf tiefem Graphit/Schwarz mit Rembrandt-/Edge-Licht.",
-      "Motiv deutlich heller als Hintergrund, Gesicht/Brust klar lesbar, dezenter Bloom an Kanten.",
-      identityHard, artGuard, compBust, quality
+      "Dramatisches Low-Key-Studio auf tiefem Graphit/Schwarz mit Rembrandt/Edge-Licht.",
+      "Motiv klar heller als Hintergrund; nichts säuft ab; keine Silhouette.",
+      identityHard, faceLock, coatLock, comp, quality, `Negativ: ${negative}`
     ].join(" "),
 
     highkey: [
-      "Strahlendes High-Key: fast weißer Hintergrund, große weiche Lichtquellen, sehr sanfte Schatten, leichter Glow.",
-      "Airy und modern; Augen lebendig; Fellzeichnung klar und natürlich.",
-      identityHard, artGuard, compBust, quality
+      "Strahlendes High-Key-Porträt: fast weißer Hintergrund, große weiche Lichtquellen, sehr sanfte Schatten, leichter Glow.",
+      identityHard, faceLock, coatLock, comp, quality, `Negativ: ${negative}`
     ].join(" "),
 
     pastell: [
-      "Eleganter Pastell-Look: matte cremige Hintergründe (Sage/Sand/Blush), diffuses weiches Licht.",
-      "Leichte painterly-Textur im Hintergrund erlaubt; Motiv natürlich scharf (v. a. Gesicht/Augen).",
-      identityHard, artGuard, compBust, quality
+      "Eleganter Pastell-Look: matte, cremige Verläufe (Sage/Sand/Blush), weiches diffuses Licht, dezente painterly-Textur nur im Hintergrund.",
+      identityHard, faceLock, coatLock, comp, quality, `Negativ: ${negative}`
     ].join(" "),
 
     vintage: [
-      "Zeitloser Vintage: zarter Elfenbein-/leichter Sepia-Ton, feines analoges Grain, behutsame Halation.",
-      "Hintergrund darf Papier/Faser andeuten; Fellfarben in Mitteltönen glaubwürdig belassen.",
-      identityHard, artGuard, compBust, quality
+      "Zeitloser Vintage-Look: zarter Elfenbein/leichter Sepia-Ton, feines analoges Grain, behutsame Halation. Hintergrund darf Papier/Faser andeuten.",
+      identityHard, faceLock, coatLock, comp, quality, `Negativ: ${negative}`
     ].join(" "),
 
     steampunk: [
-      "Warme Messing/Kupfer-Palette im HINTERGRUND (unscharfes industrielles Bokeh).",
-      "Warmes Wolfram-Keylight + kühleres Rim; keine harte Mitteltön-Umlackierung am Fell.",
-      identityHard, artGuard, compBust, quality
+      "Warme Messing/Kupfer-Palette im unscharfen Hintergrund (industrielles Bokeh); warmes Wolfram-Key + kühleres Rim.",
+      identityHard, faceLock, coatLock, comp, quality, `Negativ: ${negative}`
     ].join(" "),
 
     natural: [
-      "Neutraler Studio-Look: ausgewogene Farben, sanfter Verlaufshintergrund, subtile Klarheit.",
-      "Leichte Vignette/Glow für Tiefe, insgesamt realistisch und ruhig.",
-      identityHard, artGuard, compFull, quality
+      "Edler neutraler Studio-Look: ausgewogene Farben, sanfter Verlaufshintergrund, leichte Vignette für Tiefe.",
+      identityHard, faceLock, coatLock, comp, quality, `Negativ: ${negative}`
     ].join(" "),
   };
-}
-
-// Optional (falls dein Endpoint Negative Prompts unterstützt):
-function buildNegativePrompt(){
-  return [
-    "cartoon, anime, 3d render, cgi, illustration, painting, lowres, blur, noise, jpeg artifacts",
-    "mutated, deformed, extra limbs, wrong anatomy, cropped ears, cut off head, disfigured",
-    "oversaturated midtones, color wash over midtones, pigment recolor, color cast on fur base",
-    "collar, clothes, accessories, text, logo, watermark, frame, border",
-    "background objects, props, hands, people"
-  ].join(", ");
 }
 
 
