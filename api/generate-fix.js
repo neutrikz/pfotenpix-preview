@@ -1,25 +1,22 @@
-// /api/generate-fix.js — Background-only Neon edit (single pass) with identity lock
-// Version: PFPX-2025-09b (headroom + slight brighten)
+// /api/generate-fix.js — PFPX background-generation + subject-preserve compositing
+// Version: PFPX-2025-09c (identity-safe, extra headroom, landscape-safe)
 import sharp from "sharp";
 import { FormData, File } from "formdata-node";
 
 export const config = { api: { bodyParser: false } };
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const VERSION = "PFPX-2025-09b";
+const VERSION = "PFPX-2025-09c";
 
-// ================= CORS =================
+// ============== CORS ==============
 function applyCORS(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "*");
-  res.setHeader(
-    "Access-Control-Expose-Headers",
-    "x-pfpx-version,x-pfpx-style-final"
-  );
+  res.setHeader("Access-Control-Expose-Headers", "x-pfpx-version,x-pfpx-style-final");
 }
 
-// ================= Utils ================
+// ============== Utils ==============
 async function readRawBody(req) {
   const chunks = [];
   for await (const ch of req) chunks.push(ch);
@@ -31,12 +28,9 @@ function parseMultipart(buffer, boundary) {
   const delim = `--${boundary}`;
   const closeDelim = `--${boundary}--`;
   const body = buffer.toString("binary");
-  const parts = body
-    .split(delim)
-    .filter((p) => p && p !== "--" && p !== closeDelim);
+  const parts = body.split(delim).filter(p => p && p !== "--" && p !== closeDelim);
 
-  const fields = {},
-    files = {};
+  const fields = {}, files = {};
   for (let raw of parts) {
     if (raw.startsWith(CRLF)) raw = raw.slice(CRLF.length);
     const sep = CRLF + CRLF;
@@ -49,23 +43,16 @@ function parseMultipart(buffer, boundary) {
     const headers = {};
     for (const line of rawHeaders.split(CRLF)) {
       const j = line.indexOf(":");
-      if (j > -1)
-        headers[line.slice(0, j).trim().toLowerCase()] = line
-          .slice(j + 1)
-          .trim();
+      if (j > -1) headers[line.slice(0, j).trim().toLowerCase()] = line.slice(j + 1).trim();
     }
     const cd = headers["content-disposition"] || "";
     const name = (cd.match(/name="([^"]+)"/i) || [])[1];
     const filename = (cd.match(/filename="([^"]+)"/i) || [])[1];
     const ctype = headers["content-type"] || "";
-    if (!name) continue;
 
+    if (!name) continue;
     if (filename) {
-      files[name] = {
-        filename,
-        contentType: ctype || "application/octet-stream",
-        buffer: Buffer.from(rawContent, "binary"),
-      };
+      files[name] = { filename, contentType: ctype || "application/octet-stream", buffer: Buffer.from(rawContent, "binary") };
     } else {
       fields[name] = Buffer.from(rawContent, "binary").toString("utf8");
     }
@@ -73,171 +60,93 @@ function parseMultipart(buffer, boundary) {
   return { fields, files };
 }
 
-function extractUrlOrDataUri(json) {
-  const item = json?.data?.[0];
-  if (!item) return null;
-  if (item.url) return item.url;
-  if (item.b64_json) return `data:image/png;base64,${item.b64_json}`;
-  return null;
+async function fetchJson(url, opts) {
+  const r = await fetch(url, opts);
+  const t = await r.text();
+  let j; try { j = JSON.parse(t); } catch { j = null; }
+  if (!r.ok) throw new Error(j?.error?.message || `HTTP ${r.status}`);
+  return j;
 }
 
-async function fetchOpenAIEdits(form) {
-  const resp = await fetch("https://api.openai.com/v1/images/edits", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, ...form.headers },
-    body: form,
-  });
-  const txt = await resp.text();
-  let json;
-  try {
-    json = JSON.parse(txt);
-  } catch {
-    json = null;
-  }
-  if (!resp.ok) {
-    const msg = json?.error?.message || `HTTP ${resp.status}`;
-    throw new Error(msg);
-  }
-  const out = extractUrlOrDataUri(json);
-  if (!out) throw new Error("OpenAI edit returned no image.");
-  return out;
+async function fetchArrayBuffer(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`fetch ${r.status}`);
+  return Buffer.from(await r.arrayBuffer());
 }
 
-// ============ Canvas + Maske ============
-// Rückt das Motiv etwas nach unten (mehr Luft oben) und hellt es leicht auf.
-async function makeOutpaintCanvasAndMask(inputBuffer, targetSize, opts = {}) {
-  const {
-    marginPct = 0.36,       // Motiv kleiner → landscape-tauglich
-    headroomTopPct = 0.08,  // zusätzliche Luft oben (verschiebt Motiv nach unten)
-    brighten = 0.08,        // Motiv minimal heller (0.00–0.15 sinnvoll)
-    maskFeatherPx = 8       // weicher Maskenrand (für minimalen Rim-Glow)
-  } = opts;
-
+// ============== Subject canvas (no modification!) ==============
+// Positioniert das Motiv auf transparentem Canvas, ohne es zu verändern.
+// marginPct: macht das Motiv kleiner → Landscape-freundlich
+// headroomTopPct: mehr Luft oben (Motiv nach unten schieben)
+async function makeSubjectCanvas(inputBuffer, targetSize, {
+  marginPct = 0.40,
+  headroomTopPct = 0.12
+} = {}) {
   const size = targetSize;
-  const m = Math.max(0, Math.min(marginPct, 0.49));
+  const padX = Math.round(size * Math.max(0, Math.min(marginPct, 0.49)));
+  const basePad = Math.round(size * Math.max(0, Math.min(marginPct, 0.49)));
 
-  // Grund-Pads (links/rechts symmetrisch):
-  const padX = Math.round(size * m);
+  const shiftDown = Math.round(size * Math.max(0, Math.min(headroomTopPct, 0.3)));
+  const padTop = basePad + shiftDown;
+  const padBottom = Math.max(0, basePad - shiftDown);
 
-  // Headroom: wir erhöhen den oberen Pad und verringern den unteren
-  const shift = Math.round(size * headroomTopPct);
-  const padTop = Math.max(0, Math.round(size * m) + shift);
-  const padBottom = Math.max(0, Math.round(size * m) - shift);
-
-  // Motiv-Größe (bezogen auf die kleinere nutzbare Innenfläche)
   const innerW = size - 2 * padX;
   const innerH = size - padTop - padBottom;
   const subjectSize = Math.min(innerW, innerH);
 
-  // Motiv minimal aufhellen, ohne Farben stark zu verändern
   const subject = await sharp(inputBuffer)
-    .resize(subjectSize, subjectSize, {
-      fit: "contain",
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
-    })
-    .modulate({ brightness: 1 + brighten, saturation: 1.0 })
+    .resize(subjectSize, subjectSize, { fit: "contain", background: { r:0,g:0,b:0,alpha:0 } })
     .png()
     .toBuffer();
 
-  // Canvas + Compositing
   const canvas = await sharp({
-    create: {
-      width: size,
-      height: size,
-      channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    create: { width: size, height: size, channels: 4, background: { r:0,g:0,b:0,alpha:0 } }
+  }).composite([{ input: subject, left: padX, top: padTop }]).png().toBuffer();
+
+  // Für einfache optionale Glows: grobe Ellipse (wird nicht an OpenAI gesendet)
+  const ellipse = { cx: size/2, cy: padTop + innerH/2, rx: innerW/2, ry: innerH/2 };
+
+  return { canvas, ellipse };
+}
+
+// ============== Prompt: Hintergrund NUR (ohne Subjekt) ==============
+function buildBackgroundPrompt() {
+  return [
+    "Erzeuge einen fotorealistischen Studio-Hintergrund OHNE Motiv: ",
+    "kräftiger, aber diffuser Neon-Glow-Verlauf von tiefem Indigo (links) zu Violett–Magenta (rechts), ",
+    "feiner atmosphärischer Dunst/Schimmer, weiche Glow-Höfe, dezente großflächige Bokeh/Dust-Partikel. ",
+    "Keine Strahlen/Laser/Godrays, keine Objekte, kein Boden, kein Text. ",
+    "Auflösung 1024x1024."
+  ].join("");
+}
+
+// ============== OpenAI: Background generation ==============
+async function generateBackground() {
+  const j = await fetchJson("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
     },
-  })
-    .composite([{ input: subject, left: padX, top: padTop }])
-    .png()
-    .toBuffer();
+    body: JSON.stringify({
+      model: "gpt-image-1",
+      prompt: buildBackgroundPrompt(),
+      size: "1024x1024",
+      n: 1
+    })
+  });
 
-  // Ellipsen-Maske: innen SCHWARZ (geschützt), außen WEISS (editierbar)
-  const rx = innerW / 2;
-  const ry = innerH / 2;
-  const cx = size / 2;
-  const cy = padTop + innerH / 2;
-
-  const feather = Math.max(0, Math.floor(maskFeatherPx));
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">
-      <rect width="100%" height="100%" fill="white"/>
-      <ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="black"/>
-      ${
-        feather > 0
-          ? `
-        <defs>
-          <radialGradient id="g" cx="50%" cy="50%" r="50%">
-            <stop offset="80%" stop-color="black" stop-opacity="1"/>
-            <stop offset="100%" stop-color="white" stop-opacity="1"/>
-          </radialGradient>
-        </defs>
-        <ellipse cx="${cx}" cy="${cy}" rx="${rx + feather}" ry="${ry + feather}" fill="url(#g)"/>
-        `
-          : ""
-      }
-    </svg>`;
-
-  const maskPng = await sharp(Buffer.from(svg)).png().toBuffer();
-
-  return { canvas, maskPng, padX, padTop, padBottom, subjectSize };
+  const item = j?.data?.[0];
+  if (!item) throw new Error("No image from OpenAI");
+  if (item.b64_json) {
+    return Buffer.from(item.b64_json, "base64");
+  } else if (item.url) {
+    return await fetchArrayBuffer(item.url);
+  }
+  throw new Error("Unexpected OpenAI response");
 }
 
-// =============== Prompts ===============
-function buildPrompts() {
-  const compCommon =
-    "Komposition: streng mittig, komplette Kopfform sichtbar, nicht heranzoomen. " +
-    "Motiv ≤ 32–36% der Bildbreite und ≤ 35–40% der Bildhöhe; rundum 35–45% Negativraum. " +
-    "Muss als 16:9-Landscape-Crop funktionieren (seitlich ausreichend Luft). " +
-    "Keine engen Beschnitte, keine Rahmen, keine schräge Perspektive.";
-
-  const compBust =
-    "Framing: Half-Portrait (Brust bis Kopf). Oberer Brustbereich sichtbar; " +
-    "kein Head-only, keine Pfoten/Beine/Unterkörper, kein Ganzkörper. " +
-    "Kopf/Brust vorn klar, Hintergrund weich.";
-
-  const identity =
-    "WICHTIG: Bereiche innerhalb der Schutzmaske bleiben 1:1 erhalten; keine Veränderung am Tier. " +
-    "Wiedererkennbarkeit absolut: Gesichtsproportionen, Augenabstand/-form, Ohren-Set, Schädelbreite, Nasenform/-länge, " +
-    "Fellfarbe/-zeichnung und Abzeichen exakt wie im Original.";
-
-  const quality =
-    "Studioqualität, sRGB, fein detaillierte Fellstruktur und Schnurrhaare, saubere Kanten, " +
-    "sanfte lokale Tonwertsteuerung, kein Wachslook, kein Oversoften.";
-
-  const negCommon =
-    "full body, whole body, legs, paws, lower body, lying, " +
-    "tight framing, tight crop, extreme close-up, macro portrait, face-only, head-only, " +
-    "fill frame, full-bleed, zoomed in, fisheye, wide distortion, caricature, anime, " +
-    "3d render, painting, watercolor, oil paint, lowres, jpeg artifacts, " +
-    "blurry, noise, banding, wrong breed, wrong coat color, wrong markings";
-
-  const neonBg =
-    "Hintergrund NUR außerhalb der Maske: kräftiger, aber diffuser Neon-Glow von tiefem Indigo (links) zu Violett–Magenta (rechts). " +
-    "Feiner atmosphärischer Dunst/Schimmer, weiche Glow-Höfe, dezente großflächige Bokeh/Dust-Partikel. " +
-    "Keine harten Lichtstrahlen, keine Laser/Godrays, keine Spotlights, keine zusätzlichen Objekte.";
-
-  const neonLight =
-    "Lichtwirkung: deutliche additive Rim-Lights (links Cyan/Teal, rechts Magenta/Pink) als Hintergrundlicht; " +
-    "die Farbe darf knapp an die Kontur anliegen, ohne das Innere des Tiers zu übermalen.";
-
-  const neonPrompt = [
-    "Galerie-taugliches Neon-Portrait: Hintergrund modern, farbig, diffus – das Tier bleibt unverändert (geschützt durch Maske).",
-    neonLight,
-    neonBg,
-    identity,
-    compCommon,
-    compBust,
-    quality,
-    "Bearbeite ausschließlich die freigegebenen (hellen) Maskenflächen."
-  ].join(" ");
-
-  const neonNeg = negCommon + ", hard godrays, laser beams, spotlight rays, posterized";
-
-  return { neon: { prompt: neonPrompt, negative: neonNeg } };
-}
-
-// ============== Handler ================
+// ============== Handler ==============
 export default async function handler(req, res) {
   applyCORS(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -246,95 +155,76 @@ export default async function handler(req, res) {
   try {
     const SIZE = 1024;
 
-    // Default-Parameter (hier die gewünschten Änderungen):
-    const DEFAULTS = {
-      marginPct: 0.36,        // kleineres Motiv → besser croppbar (Landscape)
-      headroomTopPct: 0.08,   // mehr Luft über dem Kopf
-      brighten: 0.08,         // Motiv etwas heller
-      maskFeatherPx: 8        // weiche Kante für sanften Rim-Glow
-    };
+    // Defaults (können via Felder übersteuert werden)
+    let marginPct = 0.40;        // kleiner → mehr Negativraum, Landscape-safe
+    let headroomTopPct = 0.12;   // mehr Luft oben
 
+    // Input lesen
     const ctype = (req.headers["content-type"] || "").toLowerCase();
     let sourceBuffer = null;
-    let style = "neon";
-    // optional overrides:
-    let compose_margin = DEFAULTS.marginPct;
-    let headroomTopPct = DEFAULTS.headroomTopPct;
-    let brighten = DEFAULTS.brighten;
+    let style = "neon"; // nur für Kompatibilität mit Frontend
 
     if (ctype.startsWith("multipart/form-data")) {
       const m = /boundary=([^;]+)/i.exec(ctype);
       if (!m) return res.status(400).json({ error: "Bad multipart (no boundary)" });
       const { fields, files } = parseMultipart(await readRawBody(req), m[1]);
-      const f = files["file"];
-      if (!f?.buffer) return res.status(400).json({ error: "No file uploaded" });
+      const f = files["file"]; if (!f?.buffer) return res.status(400).json({ error: "No file uploaded" });
       sourceBuffer = f.buffer;
+
       if (fields["style"]) style = String(fields["style"]).toLowerCase() || "neon";
       if (fields["compose_margin"]) {
         const v = parseFloat(fields["compose_margin"]);
-        if (Number.isFinite(v)) compose_margin = v;
+        if (Number.isFinite(v)) marginPct = v;
       }
       if (fields["headroom_top_pct"]) {
         const v = parseFloat(fields["headroom_top_pct"]);
         if (Number.isFinite(v)) headroomTopPct = v;
       }
-      if (fields["brighten"]) {
-        const v = parseFloat(fields["brighten"]);
-        if (Number.isFinite(v)) brighten = v;
-      }
     } else if (ctype.includes("application/json")) {
       const body = JSON.parse((await readRawBody(req)).toString("utf8") || "{}");
-      const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/, "");
+      const b64 = (body.imageData || "").replace(/^data:image\/\w+;base64,/,"");
       if (!b64) return res.status(400).json({ error: "Kein Bild empfangen." });
       sourceBuffer = Buffer.from(b64, "base64");
+
       if (body.style) style = String(body.style).toLowerCase() || "neon";
       if (body.compose_margin != null) {
         const v = parseFloat(body.compose_margin);
-        if (Number.isFinite(v)) compose_margin = v;
+        if (Number.isFinite(v)) marginPct = v;
       }
       if (body.headroom_top_pct != null) {
         const v = parseFloat(body.headroom_top_pct);
         if (Number.isFinite(v)) headroomTopPct = v;
       }
-      if (body.brighten != null) {
-        const v = parseFloat(body.brighten);
-        if (Number.isFinite(v)) brighten = v;
-      }
     } else {
       return res.status(415).json({ error: "Unsupported Content-Type" });
     }
 
-    // 1) Canvas + Maske
-    const { canvas, maskPng } = await makeOutpaintCanvasAndMask(sourceBuffer, SIZE, {
-      marginPct: compose_margin,
-      headroomTopPct,
-      brighten,
-      maskFeatherPx: DEFAULTS.maskFeatherPx
+    // 1) Subjekt-Canvas vorbereiten (OHNE Bearbeitung des Tiers)
+    const { canvas: subjectPng } = await makeSubjectCanvas(sourceBuffer, SIZE, {
+      marginPct,
+      headroomTopPct
     });
 
-    // 2) Prompt (nur Neon aktiv)
-    const { neon } = buildPrompts();
-    const prompt = neon.prompt + ` Negative: ${neon.negative}`;
+    // 2) Neon-Hintergrund generieren (rein KI, ohne Motiv)
+    const bgPng = await generateBackground();
 
-    // 3) Ein einziger Edit-Call (Hintergrund)
-    const form = new FormData();
-    form.set("model", "gpt-image-1");
-    form.set("image", new File([canvas], "image.png", { type: "image/png" }));
-    form.set("mask", new File([maskPng], "mask.png", { type: "image/png" }));
-    form.set("prompt", prompt);
-    form.set("n", "1");
-    form.set("size", "1024x1024");
+    // 3) Compositing: Hintergrund + Original-Motiv
+    //    (Optional könnte man hier noch additive Außen-Glows per SVG hinzufügen.)
+    const final = await sharp(bgPng)
+      .composite([{ input: subjectPng, left: 0, top: 0 }])
+      .png()
+      .toBuffer();
 
-    const outUrl = await fetchOpenAIEdits(form);
+    // Data-URL zurückgeben (vom Frontend direkt anzeigbar)
+    const dataUrl = `data:image/png;base64,${final.toString("base64")}`;
 
     res.setHeader("x-pfpx-version", VERSION);
     res.setHeader("x-pfpx-style-final", style);
     return res.status(200).json({
       success: true,
-      previews: { [style]: outUrl },
-      compose_margin,
+      previews: { [style]: dataUrl },
+      compose_margin: marginPct,
       headroom_top_pct: headroomTopPct,
-      brighten,
       version: VERSION
     });
   } catch (err) {
