@@ -137,151 +137,101 @@ async function makeOutpaintCanvas(inputBuffer, targetSize, marginPct) {
 
   return canvas;
 }
-
-/* =======================================================================
-   PFPX – Prompt-Baustein (Drop-in für generate-fix, 1-Pass)
-   Fokus:
-   - Stärkere Wiedererkennbarkeit (Landmark/Pattern-Lock)
-   - Kräftigerer NEON-Hintergrund ohne Fell-Midtöne zu verfärben
-   - Croppbar für Hoch und Quer (viel Negativraum)
-   ======================================================================= */
-
-/* ---------- Negatives (unterbinden Cartoon/Drift/Recolor) ---------- */
-const PFPX_NEG = [
-  // Stil / Render
-  "cartoon, anime, comic, 3D render, vector art, painting, sketch, lineart",
-  // Uncanny / Material
-  "plastic, waxy, porcelain, doll-like, uncanny valley, oversoften, airbrush",
-  // Geometrie / Breed-Drift / Augen
-  "breed change, skull reshaped, wrong muzzle, altered blaze stripe, wrong mask pattern",
-  "altered inter-ocular distance, large eyes, baby-doll eyes, closer eyes, extra eyes",
-  "misplaced nose, asymmetric eyes, deformed pupils",
-  // Recolor / Tonwerte
-  "global midtone recolor, coat recolor, color wash over midtones, blown highlights, crushed blacks",
-  // Komposition / Artefakte
-  "tight crop, macro close-up, cut ears, cut whiskers, frame, border, caption, text, logo, watermark",
-  "blur, motion blur, smear, smudge, ringing, over-sharpen halos, heavy noise"
-].join(", ");
-
-/* ---------- Stil-Prompts: konservativ, mit hartem Landmark-/Pattern-Lock ---------- */
-function buildPrompts() {
-  // Komposition mit viel Luft (für Hoch & Quer)
+// ===== Prompts =====
+function buildPrompts () {
+  // Universelle Komposition – passt für Hoch- und Querformat
   const comp =
-    "Composition: subject perfectly centered and fully visible; " +
-    "animal occupies ~16–22% of frame width and height; " +
-    "keep ~40–55% negative space on left and right, and ~20–30% headroom/footroom; " +
-    "no tight crop or borders; extend background seamlessly for future crops; " +
-    "neutral, stable pose (front or slight 3/4), no leaning.";
+    "Komposition: Motiv streng mittig, vollständig sichtbar. " +
+    "Motivgröße: höchstens 55% der Bildhöhe und 50% der Bildbreite, " +
+    "auf allen Seiten großzügiger Negativraum (25–40%). " +
+    "Kein enger Beschnitt, keine Rahmen, Hintergrund nahtlos erweitern. " +
+    "Eignet sich für spätere Hoch-/Querformat-Crops.";
 
-  // Landmark-Lock (verhindert andere Gesichtsgeometrie/Augenabstand)
+  // Harte Identitäts-/Anatomie-Constraints
   const identity =
-    "Identity lock: reproduce the exact animal from the photo. " +
-    "Preserve face landmarks 1:1 — skull silhouette, ear base width and ear tip angle, " +
-    "muzzle length/width ratio, nasal bridge and nose leather shape/position, " +
-    "inter-ocular distance and adult eye size (do not enlarge), " +
-    "forehead wrinkle & blaze stripe topology, cheek mask edges and whisker pads.";
+    "Exakte Wiedererkennbarkeit des realen Haustiers aus der Vorlage. " +
+    "Gesichtsproportionen NICHT ändern: Augenabstand, Augenform/-größe, " +
+    "Nasenbreite und -position, Stop/Maske, Maullänge, Stirn- und Backenkontur. " +
+    "Ohrenform und -Winkel beibehalten. " +
+    "Fellfarben und -zeichnung der MITTELTÖNE unverfälscht erhalten; " +
+    "charakteristische Abzeichen (Brustfleck, Maske, Socken/Strümpfe, Blesse) " +
+    "genau nach Vorlage. " +
+    "Augenfarbe natürlich, klare Catchlights erlaubt. " +
+    "Keine Accessoires, keine Typografie/Logos, keine neuen Vordergrundobjekte, " +
+    "kein Rasse-Morphing.";
 
-  // Fell/Pattern-Lock (Brust/Beine/Masken dürfen NICHT umgefärbt werden)
-  const coat =
-    "Coat fidelity: keep midtone albedo and all characteristic markings and white patches " +
-    "(chest wedge, legs, blaze/mask) exactly as in the photo. " +
-    "Apply style primarily to highlights and shadows; do not recolor midtones.";
+  // Wie Neon wirken darf (additiv, nicht recolor)
+  const neonDiscipline =
+    "Neon-Effekt ausschließlich ADDITIV in Lichtern/Rim-Lights (Screen/Lighten). " +
+    "Mitteltöne/Albedo des Fells NICHT global umfärben; weiße/helle Partien bleiben naturgetreu. " +
+    "Glühen/Halation fein, Fellkanten und Schnurrhaare scharf, kein Oversoften.";
 
+  // Drucktaugliche, ruhige Technik
   const quality =
-    "Photorealistic studio detail, crisp whiskers and fur edges, clean sRGB, " +
-    "gentle local tone mapping, subtle clarity, no excessive sharpening.";
+    "Studioqualität, fotorealistische Details, sanfte lokale Tonwerte, " +
+    "saubere Kanten, sRGB. 85mm-Porträtcharakter, f/5.6 Look, subtile Vignette.";
 
   return {
-    /* ---------------------- NEON (verstärkt) ---------------------- */
+    // ——— NEON (weicher Glow, stärkere Hintergrund-Stimmung, aber identitäts-treu) ———
     neon: [
-      "Premium neon portrait: dual additive rim lights — strong cyan/turquoise from camera-left " +
-        "and saturated magenta/pink from camera-right; optional warm orange kicker only in speculars.",
-      // **Hintergrund deutlich stärker**, Fell-Midtöne neutral halten
-      "Background neon boost: highly luminous indigo→violet gradient with saturated cyan/magenta haze, " +
-        "soft radial glow, subtle volumetric fog and faint bokeh light streaks; " +
-        "background glow intensity high; edge glow ++; " +
-        "do not push neon into midtones of the coat.",
-      "Additive lighting (screen/lighten) with halation along contours; " +
-        "clear eyes with coloured catchlights; no global midtone colour shift on the subject.",
-      identity, coat, comp, quality
+      "Galerietauglicher Neon-Look mit balancierten, additiven Rim-Lichtern:",
+      "linke Seite kräftiges Cyan/Türkis, rechte Seite sattes Magenta/Pink;",
+      "optional dezenter warmer Orange-Kicker nur in Highlights.",
+      neonDiscipline,
+      // Hintergrund = mehr Glow statt Rays
+      "Hintergrund: weicher Indigo-zu-Pflaume Farbverlauf mit deutlichem Glow, " +
+      "subtile atmosphärische Dunstschleier und sanftes Bokeh, keine harten Lichtstrahlen, " +
+      "keine geometrischen Pattern. Leichtes Bloom um helle Kanten.",
+      identity,
+      comp,
+      quality
     ].join(" "),
 
+    // weitere Stile (unverändert gern anpassen)
     cinematic: [
-      "Cinematic grade: restrained teal/orange, fine grain, soft highlight bloom; deep but detailed blacks; slight vignette.",
-      identity, coat, comp, quality
+      "Filmischer Look mit moderater Teal/Orange-Gradierung, feinem Filmkorn, " +
+      "leicht anamorphem Bokeh im Hintergrund, sanftem Bloom.",
+      "Schwärzen tief mit Zeichnung; Mitteltöne natürlich.",
+      identity, comp, quality
     ].join(" "),
 
     lowkey: [
-      "Dramatic low-key studio on graphite/near-black with controlled Rembrandt/edge lighting; " +
-      "face and chest readable, no silhouette.",
-      identity, coat, comp, quality
+      "Dramatisches Low-Key-Studio auf tiefem Graphit/Schwarz mit Rembrandt/Edge-Licht.",
+      "Gesicht/Brust deutlich lesbar, kein Absaufen, dezenter Bloom.",
+      identity, comp, quality
     ].join(" "),
 
     highkey: [
-      "Bright airy high-key portrait with large soft sources and near-white background; gentle glow.",
-      identity, coat, comp, quality
+      "Helles High-Key-Porträt: sehr weiche große Lichtquellen, fast weißer Hintergrund, " +
+      "sanfte Schatten, leichter Glow.",
+      identity, comp, quality
     ].join(" "),
 
     pastell: [
-      "Elegant pastel look: matte creamy gradients (sage/sand/blush) with soft diffuse light; painterly texture only in background.",
-      identity, coat, comp, quality
+      "Eleganter Pastell-Look: matte, cremige Verläufe (Sage/Sand/Blush), diffuses weiches Licht, " +
+      "painterly-Textur nur im Hintergrund.",
+      identity, comp, quality
     ].join(" "),
 
     vintage: [
-      "Timeless vintage: subtle ivory/soft sepia, fine analog grain, restrained halation; background paper/fiber hint allowed.",
-      identity, coat, comp, quality
+      "Zeitloser Vintage-Look: zarter Elfenbein-/Sepia-Ton, feines analoges Grain, behutsame Halation. " +
+      "Hintergrund darf Papier/Faser andeuten.",
+      identity, comp, quality
     ].join(" "),
 
     steampunk: [
-      "Warm steampunk tone: brass/copper palette mainly in the background (soft industrial bokeh); " +
-      "warm tungsten key plus cooler rim.",
-      identity, coat, comp, quality
+      "Warmer Steampunk-Ton im HINTERGRUND (unscharfes Messing/Kupfer-Bokeh), " +
+      "Wolfram-Key + kühlerer Rim; Mitteltöne des Fells unverfälscht.",
+      identity, comp, quality
     ].join(" "),
 
     natural: [
-      "Refined neutral studio look: balanced colour, soft backdrop gradient, light vignette for depth.",
-      identity, coat, comp, quality
-    ].join(" "),
+      "Neutraler Studio-Look: ausgewogene Farben, sanfter Verlaufshintergrund, subtile Klarheit.",
+      identity, comp, quality
+    ].join(" ")
   };
 }
 
-/**
- * 1-Pass Pipeline (auch NEON): Du rufst weiter nur EIN Render auf.
- * Erwartet deine Render-Funktion:
- *   render({ image, prompt, negative, strength, cfg, seed, width, height })
- */
-async function runPipeline(image, style, seed, render) {
-  const PROMPTS = buildPrompts();
-
-  // Portrait 3:4 mit sehr viel Luft -> Hoch & Quer sicher croppbar
-  const WIDTH  = 1024;
-  const HEIGHT = 1365;
-
-  // Standard-Werte: Landmark-freundlich
-  let strength = 0.30;  // 0.28–0.32: je niedriger, desto ID-treuer
-  let cfg      = 2.7;   // 2.5–2.9: kleiner = weniger globaler Stil-Drift
-
-  if (style === 'neon') {
-    // NEON kräftiger Hintergrund, aber weiterhin ID-schonend
-    strength = 0.30;    // genug Glow ohne Geometrie-Shift
-    cfg      = 2.75;    // etwas mehr Look, Fell-Midtöne bleiben stabil
-  }
-
-  const prompt = PROMPTS[style] || PROMPTS.natural;
-
-  const out = await render({
-    image,
-    prompt,
-    negative: PFPX_NEG,
-    strength,
-    cfg,
-    seed,
-    width: WIDTH,
-    height: HEIGHT
-  });
-
-  return out?.image ?? out;
-}
 
 /* ===== Exports (ESM & CJS) ===== */
 export { PFPX_NEG, buildPrompts, runPipeline };
